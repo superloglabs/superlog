@@ -1156,6 +1156,139 @@ test("an org-scoped installation can enable observability reviews from an author
   );
 });
 
+test("installation webhooks only restore rows they revoked themselves", async () => {
+  const tag = `test-install-revoke-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+  const installationId = Math.floor(Date.now() / 1000) + Math.floor(Math.random() * 1_000_000);
+  const [orgA] = await db
+    .insert(schema.orgs)
+    .values({ name: `${tag}-a`, slug: `${tag}-a` })
+    .returning();
+  const [orgB] = await db
+    .insert(schema.orgs)
+    .values({ name: `${tag}-b`, slug: `${tag}-b` })
+    .returning();
+  if (!orgA || !orgB) throw new Error("failed to seed orgs");
+  orgIds.push(orgA.id, orgB.id);
+
+  const userRevokedAt = new Date("2026-01-01T00:00:00.000Z");
+  const [userRevoked] = await db
+    .insert(schema.githubInstallations)
+    .values({ orgId: orgA.id, installationId, revokedAt: userRevokedAt })
+    .returning();
+  const [active] = await db
+    .insert(schema.githubInstallations)
+    .values({ orgId: orgB.id, installationId })
+    .returning();
+  if (!userRevoked || !active) throw new Error("failed to seed installations");
+
+  const app = new Hono();
+  mountGithubPublic(app);
+  const send = (action: string) =>
+    postGithub(app, "installation", `${tag}-${action}`, {
+      action,
+      installation: { id: installationId, account: { login: "acme", type: "Organization" } },
+    });
+  const load = (id: string) =>
+    db.query.githubInstallations.findFirst({ where: eq(schema.githubInstallations.id, id) });
+
+  assert.equal((await send("suspend")).status, 200);
+  assert.ok((await load(active.id))?.revokedAt);
+  assert.equal((await load(active.id))?.revokedReason, "github_suspended");
+  assert.equal((await load(userRevoked.id))?.revokedReason, null);
+  assert.equal((await load(userRevoked.id))?.revokedAt?.toISOString(), userRevokedAt.toISOString());
+
+  assert.equal((await send("unsuspend")).status, 200);
+  assert.equal((await load(active.id))?.revokedAt, null);
+  assert.equal((await load(active.id))?.revokedReason, null);
+  assert.ok((await load(userRevoked.id))?.revokedAt);
+
+  for (const action of ["new_permissions_accepted", "created"]) {
+    assert.equal((await send(action)).status, 200);
+    assert.ok((await load(userRevoked.id))?.revokedAt);
+    assert.equal((await load(active.id))?.revokedAt, null);
+  }
+
+  // A row revoked by uninstall stays revoked when the org has since linked
+  // the installation again, instead of colliding with the newer active row.
+  assert.equal((await send("deleted")).status, 200);
+  assert.equal((await load(active.id))?.revokedReason, "github_deleted");
+  const [relinked] = await db
+    .insert(schema.githubInstallations)
+    .values({ orgId: orgB.id, installationId })
+    .returning();
+  if (!relinked) throw new Error("failed to seed relinked installation");
+  assert.equal((await send("unsuspend")).status, 200);
+  assert.ok((await load(active.id))?.revokedAt);
+  assert.equal((await load(relinked.id))?.revokedAt, null);
+
+  // A later suspend only marks the row it revoked, so unsuspend restores one
+  // row per org rather than every row an earlier event revoked.
+  assert.equal((await send("suspend")).status, 200);
+  assert.equal((await load(active.id))?.revokedReason, null);
+  assert.equal((await load(relinked.id))?.revokedReason, "github_suspended");
+  assert.equal((await send("unsuspend")).status, 200);
+  assert.ok((await load(active.id))?.revokedAt);
+  assert.equal((await load(relinked.id))?.revokedAt, null);
+});
+
+test("agent PR webhooks from another installation do not touch the PR", async () => {
+  const fixture = await seedAgentPrFixture("foreign-installation");
+  const app = new Hono();
+  mountGithubPublic(app);
+  const mergedAt = new Date().toISOString();
+  const mergedPayload = (installationId: number) => ({
+    action: "closed",
+    repository: { full_name: fixture.repoFullName },
+    pull_request: {
+      number: fixture.prNumber,
+      merged: true,
+      merged_at: mergedAt,
+      closed_at: mergedAt,
+      merged_by: { login: "alice", id: 100 },
+      head: { sha: "cafebabe", ref: fixture.branchName },
+    },
+    sender: { login: "alice", id: 100 },
+    installation: { id: installationId },
+  });
+
+  const foreign = await postGithub(
+    app,
+    "pull_request",
+    `gh-${fixture.tag}-foreign`,
+    mergedPayload(fixture.installationId + 1),
+  );
+  assert.equal(foreign.status, 200);
+  const foreignPush = await postGithub(app, "push", `gh-${fixture.tag}-foreign-push`, {
+    ref: `refs/heads/${fixture.branchName}`,
+    after: "f00dfeed",
+    repository: { full_name: fixture.repoFullName },
+    installation: { id: fixture.installationId + 1 },
+  });
+  assert.equal(foreignPush.status, 200);
+
+  const untouched = await db.query.agentPullRequests.findFirst({
+    where: eq(schema.agentPullRequests.id, fixture.agentPrId),
+  });
+  assert.equal(untouched?.state, "open");
+  assert.equal(untouched?.headSha, "deadbeef");
+  const openIncident = await db.query.incidents.findFirst({
+    where: eq(schema.incidents.id, fixture.incidentId),
+  });
+  assert.notEqual(openIncident?.status, "resolved");
+
+  const own = await postGithub(
+    app,
+    "pull_request",
+    `gh-${fixture.tag}-own`,
+    mergedPayload(fixture.installationId),
+  );
+  assert.equal(own.status, 200);
+  const merged = await db.query.agentPullRequests.findFirst({
+    where: eq(schema.agentPullRequests.id, fixture.agentPrId),
+  });
+  assert.equal(merged?.state, "merged");
+});
+
 async function seedAgentPrFixture(label: string): Promise<{
   tag: string;
   repoFullName: string;

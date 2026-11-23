@@ -1869,6 +1869,8 @@ export const mcpOauthTokens = pgTable(
   }),
 );
 
+export type GithubInstallationWebhookRevokeReason = "github_deleted" | "github_suspended";
+
 export const githubInstallations = pgTable(
   "github_installations",
   {
@@ -1904,6 +1906,11 @@ export const githubInstallations = pgTable(
       withTimezone: true,
     }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    // Set only when GitHub's `installation` webhook revoked the row
+    // (uninstall or suspend). Those rows, and only those, come back when
+    // GitHub reports the installation live again. Rows revoked any other
+    // way keep this null and stay revoked.
+    revokedReason: text("revoked_reason").$type<GithubInstallationWebhookRevokeReason>(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
