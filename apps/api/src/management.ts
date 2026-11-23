@@ -1051,7 +1051,7 @@ async function revokeOrgScopedInstallation(
   const install = await requireOrgScopedInstall(orgId, installationRowId);
   await db
     .update(schema.githubInstallations)
-    .set({ revokedAt: new Date() })
+    .set({ revokedAt: new Date(), revokedReason: null })
     .where(eq(schema.githubInstallations.id, install.id));
   log.info(
     { org_id: orgId, installation_row_id: install.id, installation_id: install.installationId },

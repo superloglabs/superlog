@@ -24,7 +24,7 @@ import {
   syncLoopsContactsForOrg,
   unblockAgentRunsAfterGithubAccess,
 } from "@superlog/db";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Hono } from "hono";
 import type { Context } from "hono";
 import { getAuthenticatedUserId as getDefaultAuthenticatedUserId } from "./authenticated-user.js";
@@ -613,24 +613,30 @@ async function handleWebhook(
           accountLogin: payload.installation?.account?.login ?? null,
           accountType: payload.installation?.account?.type ?? null,
           repos: [],
-          revokedAt: null,
         })
         .where(eq(schema.githubInstallations.installationId, installationId));
+      await restoreWebhookRevokedInstallations(installationId);
       await resumeBlockedAgentRunsForInstallation(installationId, "github_install");
       return;
     }
     if (action === "deleted" || action === "suspend") {
+      const revokedReason: schema.GithubInstallationWebhookRevokeReason =
+        action === "deleted" ? "github_deleted" : "github_suspended";
+      // Only rows active right now get a reason. Rows that were already
+      // revoked keep theirs, so a repeated delivery changes nothing.
       await db
         .update(schema.githubInstallations)
-        .set({ revokedAt: new Date() })
-        .where(eq(schema.githubInstallations.installationId, installationId));
+        .set({ revokedAt: new Date(), revokedReason })
+        .where(
+          and(
+            eq(schema.githubInstallations.installationId, installationId),
+            isNull(schema.githubInstallations.revokedAt),
+          ),
+        );
       return;
     }
     if (action === "unsuspend") {
-      await db
-        .update(schema.githubInstallations)
-        .set({ revokedAt: null })
-        .where(eq(schema.githubInstallations.installationId, installationId));
+      await restoreWebhookRevokedInstallations(installationId);
       await resumeBlockedAgentRunsForInstallation(installationId, "github_install");
       return;
     }
@@ -798,6 +804,31 @@ async function resumeBlockedAgentRunsForOrg(
   await resumeBlockedAgentRunsForProjects([...projectIds], trigger);
 }
 
+// Re-activates rows that this webhook handler revoked for an uninstall or
+// suspend. Rows revoked by a user, an operator or any other path have no
+// revoked_reason and are left alone. A row is skipped when its project or
+// org has an active row for the installation or has linked it again since
+// the row was created, even if that newer row was later revoked.
+async function restoreWebhookRevokedInstallations(installationId: number): Promise<void> {
+  await db.execute(sql`
+    UPDATE github_installations AS gi
+    SET revoked_at = NULL, revoked_reason = NULL
+    WHERE gi.installation_id = ${installationId}
+      AND gi.revoked_at IS NOT NULL
+      AND gi.revoked_reason IN ('github_deleted', 'github_suspended')
+      AND NOT EXISTS (
+        SELECT 1 FROM github_installations AS other
+        WHERE other.installation_id = gi.installation_id
+          AND other.id <> gi.id
+          AND (other.revoked_at IS NULL OR other.created_at > gi.created_at)
+          AND (
+            (gi.project_id IS NOT NULL AND other.project_id = gi.project_id)
+            OR (gi.project_id IS NULL AND other.project_id IS NULL AND other.org_id = gi.org_id)
+          )
+      )
+  `);
+}
+
 async function resumeBlockedAgentRunsForInstallation(
   installationId: number,
   trigger: "github_install" | "github_repos_added",
@@ -848,6 +879,14 @@ async function handleAgentPrWebhook(
     if (!payload.issue?.pull_request) return;
     prNumber = payload.issue.number;
   }
+  // The PR row must belong to the GitHub installation that sent this event,
+  // not just share its repo name.
+  const installationId = payload.installation?.id;
+  if (!installationId) return;
+  const installationRowIds = db
+    .select({ id: schema.githubInstallations.id })
+    .from(schema.githubInstallations)
+    .where(eq(schema.githubInstallations.installationId, installationId));
   // push: resolve by branch
   let agentPrRow: schema.AgentPullRequest | undefined;
   if (event === "push") {
@@ -858,6 +897,7 @@ async function handleAgentPrWebhook(
       where: and(
         eq(schema.agentPullRequests.repoFullName, repoFullName),
         eq(schema.agentPullRequests.branchName, branch),
+        inArray(schema.agentPullRequests.installationId, installationRowIds),
       ),
     });
   } else if (typeof prNumber === "number") {
@@ -865,6 +905,7 @@ async function handleAgentPrWebhook(
       where: and(
         eq(schema.agentPullRequests.repoFullName, repoFullName),
         eq(schema.agentPullRequests.prNumber, prNumber),
+        inArray(schema.agentPullRequests.installationId, installationRowIds),
       ),
     });
   }
@@ -940,17 +981,6 @@ async function handleAgentPrWebhook(
         };
       },
       async loadAuthoritativeObservation() {
-        let installationId = payload.installation?.id;
-        if (!installationId) {
-          const installation = await db.query.githubInstallations.findFirst({
-            where: eq(schema.githubInstallations.id, agentPrRow.installationId),
-            columns: { installationId: true },
-          });
-          installationId = installation?.installationId;
-        }
-        if (!installationId) {
-          throw new Error(`GitHub installation unavailable for agent PR ${agentPrRow.id}`);
-        }
         return fetchAuthoritativeGithubPullRequestProviderObservation({
           installationId,
           repoFullName,
@@ -2424,7 +2454,7 @@ export function mountGithubAuthed(app: Hono<any>): void {
         if (isMissingGithubInstallation(err)) {
           await db
             .update(schema.githubInstallations)
-            .set({ revokedAt: new Date() })
+            .set({ revokedAt: new Date(), revokedReason: null })
             .where(eq(schema.githubInstallations.id, row.id));
           continue;
         }
