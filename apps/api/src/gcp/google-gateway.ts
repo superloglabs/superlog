@@ -174,7 +174,7 @@ export class GoogleGcpGateway implements GcpGateway {
     private readonly serviceAccessToken: AccessTokenProvider = defaultServiceAccessToken,
   ) {}
 
-  authorizationUrl({ state }: { state: string }): string {
+  authorizationUrl({ state, codeChallenge }: { state: string; codeChallenge: string }): string {
     const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
     url.searchParams.set("client_id", this.config.clientId);
     url.searchParams.set("redirect_uri", this.config.redirectUri);
@@ -190,26 +190,30 @@ export class GoogleGcpGateway implements GcpGateway {
     url.searchParams.set("access_type", "online");
     url.searchParams.set("prompt", "consent");
     url.searchParams.set("state", state);
+    url.searchParams.set("code_challenge", codeChallenge);
+    url.searchParams.set("code_challenge_method", "S256");
     return url.toString();
   }
 
-  async exchangeCode(code: string): Promise<{ accessToken: string }> {
+  async exchangeCode(code: string, codeVerifier?: string): Promise<{ accessToken: string }> {
+    const body = new URLSearchParams({
+      code,
+      client_id: this.config.clientId,
+      client_secret: this.config.clientSecret,
+      redirect_uri: this.config.redirectUri,
+      grant_type: "authorization_code",
+    });
+    if (codeVerifier) body.set("code_verifier", codeVerifier);
     const response = await this.fetchImpl("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        code,
-        client_id: this.config.clientId,
-        client_secret: this.config.clientSecret,
-        redirect_uri: this.config.redirectUri,
-        grant_type: "authorization_code",
-      }),
+      body,
     });
     if (!response.ok) throw await responseError(response, "POST oauth2.googleapis.com/token");
-    const body = (await response.json()) as { access_token?: string };
-    if (!body.access_token)
+    const payload = (await response.json()) as { access_token?: string };
+    if (!payload.access_token)
       throw new Error("Google OAuth response did not include an access token");
-    return { accessToken: body.access_token };
+    return { accessToken: payload.access_token };
   }
 
   async listProjects(userAccessToken: string): Promise<GcpProjectOption[]> {

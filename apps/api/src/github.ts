@@ -43,7 +43,7 @@ import { runResolvedIncidentSideEffectsForIncident } from "./incidents/resolutio
 import { authorizeIntegrationInstall } from "./integration-install-authorization.js";
 import { logger } from "./logger.js";
 import { requireProjectManagerContext } from "./org-authorization-http.js";
-import { hasProjectManagerAccess } from "./org-authorization.js";
+import { hasOrgManagerAccess, hasProjectManagerAccess } from "./org-authorization.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 import { recordPrClosedMetric, recordPrMergedMetric } from "./pr-metrics.js";
 import {
@@ -82,6 +82,7 @@ type GithubPublicDependencies = GithubWebhookPort & {
     userCode: string,
   ): NonNullable<ReturnType<typeof getSkillDeviceForIntegration>> | null;
   hasProjectManagerAccess: typeof hasProjectManagerAccess;
+  hasOrgManagerAccess(args: { userId: string; orgId: string }): Promise<boolean>;
   userCanAccessInstallation(opts: {
     clientId: string;
     clientSecret: string;
@@ -108,6 +109,7 @@ export function mountGithubPublic(
     dependencies.resolveDevice ??
     ((userCode: string) => getLinkedDevice(userCode) ?? getSkillDeviceForIntegration(userCode));
   const canManageProject = dependencies.hasProjectManagerAccess ?? hasProjectManagerAccess;
+  const canManageOrg = dependencies.hasOrgManagerAccess ?? hasOrgManagerAccess;
   const stateSecret = process.env.STATE_SIGNING_SECRET;
   const webhookSecret = process.env.GITHUB_APP_WEBHOOK_SECRET;
   const webOrigin = process.env.WEB_ORIGIN ?? "http://localhost:5173";
@@ -240,9 +242,11 @@ export function mountGithubPublic(
     const mgmt = verifyMgmtState(state, stateSecret);
     if (mgmt) {
       const callbackWebOrigin = resolveCallbackWebOrigin(c, webOrigin);
-      const failTarget = mgmt.returnUrl ?? buildAppWebUrl(callbackWebOrigin);
+      // Failures always land in the app. The caller's return URL is used only
+      // after an installation was linked.
+      const failTarget = buildAppWebUrl(callbackWebOrigin, "?gh=error");
       if (!Number.isFinite(installationId) || installationId <= 0) {
-        return c.redirect(`${failTarget}${failTarget.includes("?") ? "&" : "?"}gh=error`, 302);
+        return c.redirect(failTarget, 302);
       }
       let resolvedOrgId: string;
       let resolvedProjectId: string | null;
@@ -253,19 +257,26 @@ export function mountGithubPublic(
         const project = await db.query.projects.findFirst({
           where: eq(schema.projects.id, mgmt.projectId),
         });
-        if (!project) {
-          return c.redirect(`${failTarget}${failTarget.includes("?") ? "&" : "?"}gh=error`, 302);
-        }
+        if (!project) return c.redirect(failTarget, 302);
         resolvedOrgId = project.orgId;
         resolvedProjectId = project.id;
       }
-      // Management states are not tied to a signed-in user, so they can only
-      // link an installation created after the state was issued.
+      // A link minted from the dashboard carries the user who minted it, and
+      // only that user, still an org manager, can complete it.
+      if (mgmt.userId) {
+        const authenticatedUserId = await getAuthenticatedUserId(c.req.raw.headers);
+        if (
+          authenticatedUserId !== mgmt.userId ||
+          !(await canManageOrg({ userId: mgmt.userId, orgId: resolvedOrgId }))
+        ) {
+          return c.redirect(failTarget, 302);
+        }
+      }
+      // Management states can only link an installation created after the
+      // state was issued.
       const access = await confirmAccess(mgmtStateIssuedAt(state) ?? new Date());
       if (access.kind === "authorize") return c.redirect(access.url, 302);
-      if (access.kind === "denied") {
-        return c.redirect(`${failTarget}${failTarget.includes("?") ? "&" : "?"}gh=error`, 302);
-      }
+      if (access.kind === "denied") return c.redirect(failTarget, 302);
       const rowId = await upsertInstallation({
         orgId: resolvedOrgId,
         projectId: resolvedProjectId,
@@ -279,7 +290,7 @@ export function mountGithubPublic(
         installationId,
         installerToken: access.installerToken,
       });
-      const successTarget = mgmt.returnUrl ?? buildAppWebUrl(callbackWebOrigin);
+      const successTarget = httpsReturnUrl(mgmt.returnUrl) ?? buildAppWebUrl(callbackWebOrigin);
       return c.redirect(
         `${successTarget}${successTarget.includes("?") ? "&" : "?"}gh=${marker}`,
         302,
@@ -3323,9 +3334,11 @@ function verifyInstallConfirmState(state: string, secret: string): InstallConfir
 // optional return URL the user is bounced to after install. 30-min TTL since
 // the customer's operator might not click immediately.
 const MGMT_STATE_PREFIX = "mgmt-v1";
+// `userId` is set when a signed-in dashboard user minted the link; links
+// minted with a management key carry no user.
 export type GithubMgmtState =
-  | { scope: "org"; orgId: string; returnUrl: string | null }
-  | { scope: "project"; projectId: string; returnUrl: string | null };
+  | { scope: "org"; orgId: string; returnUrl: string | null; userId?: string | null }
+  | { scope: "project"; projectId: string; returnUrl: string | null; userId?: string | null };
 
 function signMgmtState(payload: GithubMgmtState, secret: string): string {
   const body = `${MGMT_STATE_PREFIX}.${Buffer.from(JSON.stringify(payload), "utf8").toString("base64url")}.${Date.now()}`;
@@ -3356,13 +3369,28 @@ function verifyMgmtState(state: string, secret: string): GithubMgmtState | null 
   try {
     const json = Buffer.from(parts[1] as string, "base64url").toString("utf8");
     const parsed = JSON.parse(json) as Partial<GithubMgmtState>;
+    const userId = typeof parsed.userId === "string" && parsed.userId ? parsed.userId : null;
+    const returnUrl = typeof parsed.returnUrl === "string" ? parsed.returnUrl : null;
     if (parsed.scope === "org" && typeof parsed.orgId === "string") {
-      return { scope: "org", orgId: parsed.orgId, returnUrl: parsed.returnUrl ?? null };
+      return { scope: "org", orgId: parsed.orgId, returnUrl, userId };
     }
     if (parsed.scope === "project" && typeof parsed.projectId === "string") {
-      return { scope: "project", projectId: parsed.projectId, returnUrl: parsed.returnUrl ?? null };
+      return { scope: "project", projectId: parsed.projectId, returnUrl, userId };
     }
     return null;
+  } catch {
+    return null;
+  }
+}
+
+// Return URLs are checked against the org's allowlist when the link is minted;
+// only https URLs without credentials are followed.
+function httpsReturnUrl(returnUrl: string | null): string | null {
+  if (!returnUrl) return null;
+  try {
+    const parsed = new URL(returnUrl);
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password) return null;
+    return parsed.toString();
   } catch {
     return null;
   }

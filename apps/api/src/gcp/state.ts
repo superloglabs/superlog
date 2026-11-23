@@ -63,3 +63,20 @@ export function verifyGcpState(state: string, secret: string, now = Date.now()):
     return null;
   }
 }
+
+// PKCE verifier for one authorization, derived from the server secret so it
+// needs no extra storage. Only this server can produce it, so a code issued for
+// one authorization cannot be redeemed through another.
+export function gcpPkceVerifier(authorizationId: string, secret: string): string {
+  return crypto
+    .createHmac("sha256", secret)
+    .update(`gcp-pkce.${authorizationId}`)
+    .digest("base64url");
+}
+
+export function gcpPkceChallenge(authorizationId: string, secret: string): string {
+  return crypto
+    .createHash("sha256")
+    .update(gcpPkceVerifier(authorizationId, secret))
+    .digest("base64url");
+}

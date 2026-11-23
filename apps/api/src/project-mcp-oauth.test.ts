@@ -6,6 +6,7 @@ import {
   type ProjectMcpOAuthAttempt,
   createFetchProjectMcpOAuthHttp,
   createProjectMcpOAuthService,
+  parseProjectMcpOAuthAttemptPayload,
 } from "./project-mcp-oauth.js";
 
 function oauthServer(): ProjectMcpServer {
@@ -133,6 +134,7 @@ test("OAuth start uses discovery, dynamic registration, PKCE, and resource bindi
   assert.ok(url.searchParams.get("code_challenge"));
   assert.ok(attempt);
   assert.equal((attempt as ProjectMcpOAuthAttempt).clientSecret, null);
+  assert.equal((attempt as ProjectMcpOAuthAttempt).initiatingUserId, "user-1");
   assert.equal(JSON.stringify(result).includes("verifier-value"), false);
 });
 
@@ -152,6 +154,7 @@ test("OAuth completion consumes the PKCE attempt and stores the token without ex
       consume: async () => ({
         projectId: server.projectId,
         serverId: server.id,
+        initiatingUserId: "user-1",
         serverUrl: server.url,
         stateHash: "hash",
         codeVerifier: "verifier",
@@ -192,7 +195,11 @@ test("OAuth completion consumes the PKCE attempt and stores the token without ex
     now: () => new Date("2026-07-14T10:00:00.000Z"),
   });
 
-  const result = await service.complete({ state: "state", code: "code" });
+  const result = await service.complete({
+    state: "state",
+    code: "code",
+    authorize: async () => true,
+  });
 
   assert.equal(result.auth.type, "oauth");
   if (result.auth.type !== "oauth") return;
@@ -219,6 +226,7 @@ test("OAuth completion rejects a grant started before the server configuration c
       consume: async () => ({
         projectId: server.projectId,
         serverId: server.id,
+        initiatingUserId: "user-1",
         serverUrl: originalUrl,
         stateHash: "hash",
         codeVerifier: "verifier",
@@ -256,7 +264,7 @@ test("OAuth completion rejects a grant started before the server configuration c
   server = { ...server, url: "https://replacement.example/mcp" };
 
   await assert.rejects(
-    service.complete({ state: "state", code: "code" }),
+    service.complete({ state: "state", code: "code", authorize: async () => true }),
     /configuration changed/i,
   );
   assert.equal(exchangeCalled, false);
@@ -580,4 +588,97 @@ test("OAuth discovery honors an explicitly empty protected-resource scope list",
     await createFetchProjectMcpOAuthHttp(fakeFetch).discover("https://mcp.example/mcp");
 
   assert.deepEqual(discovery.scopesSupported, []);
+});
+
+test("OAuth completion is refused before the code exchange when the browser may not finish it", async () => {
+  const server = oauthServer();
+  let exchangeCalled = false;
+  const seen: Array<{ projectId: string; initiatingUserId: string | null }> = [];
+  const service = createProjectMcpOAuthService({
+    repository: {
+      get: async () => server,
+      update: async (next: ProjectMcpServer) => next,
+    } as unknown as ProjectMcpServerRepository,
+    attempts: {
+      create: async () => {},
+      consume: async () => ({
+        projectId: server.projectId,
+        serverId: server.id,
+        initiatingUserId: "user-1",
+        serverUrl: server.url,
+        stateHash: "hash",
+        codeVerifier: "verifier",
+        redirectUri: "https://api.superlog.sh/api/agent-mcp-oauth/callback",
+        clientId: "client",
+        clientSecret: null,
+        tokenEndpoint: "https://auth.example/token",
+        authorizationServer: "https://auth.example",
+        resource: server.url,
+        scopes: ["issues:read"],
+        expiresAt: new Date("2026-07-14T10:10:00.000Z"),
+      }),
+    },
+    http: {
+      discover: async () => {
+        throw new Error("not called");
+      },
+      register: async () => {
+        throw new Error("not called");
+      },
+      exchange: async () => {
+        exchangeCalled = true;
+        throw new Error("must not exchange");
+      },
+      refresh: async () => {
+        throw new Error("not called");
+      },
+      clientCredentials: async () => {
+        throw new Error("not called");
+      },
+    },
+    now: () => new Date("2026-07-14T10:00:00.000Z"),
+  });
+
+  await assert.rejects(
+    service.complete({
+      state: "state",
+      code: "code",
+      authorize: async (attempt) => {
+        seen.push(attempt);
+        return false;
+      },
+    }),
+    /invalid or expired/i,
+  );
+  assert.deepEqual(seen, [{ projectId: "project-1", initiatingUserId: "user-1" }]);
+  assert.equal(exchangeCalled, false);
+});
+
+test("stored OAuth attempts without a recorded initiator are not resumed", () => {
+  const base = {
+    projectId: "project-1",
+    serverId: "server-1",
+    serverUrl: "https://linear.example/mcp",
+    stateHash: "hash",
+    codeVerifier: "verifier",
+    redirectUri: "https://api.superlog.sh/api/agent-mcp-oauth/callback",
+    clientId: "client",
+    clientSecret: null,
+    tokenEndpoint: "https://auth.example/token",
+    authorizationServer: "https://auth.example",
+    resource: "https://linear.example/mcp",
+    scopes: ["issues:read"],
+    expiresAt: "2026-07-14T10:10:00.000Z",
+  };
+  assert.equal(parseProjectMcpOAuthAttemptPayload(JSON.stringify(base)), null);
+  assert.equal(
+    parseProjectMcpOAuthAttemptPayload(JSON.stringify({ ...base, initiatingUserId: null }))
+      ?.initiatingUserId,
+    null,
+  );
+  const fromUser = parseProjectMcpOAuthAttemptPayload(
+    JSON.stringify({ ...base, initiatingUserId: "user-1" }),
+  );
+  assert.equal(fromUser?.initiatingUserId, "user-1");
+  assert.deepEqual(fromUser?.expiresAt, new Date("2026-07-14T10:10:00.000Z"));
 });

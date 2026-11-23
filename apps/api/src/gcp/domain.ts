@@ -107,8 +107,8 @@ export type GcpDeprovisioningInput = {
 };
 
 export interface GcpGateway {
-  authorizationUrl(input: { state: string }): string;
-  exchangeCode(code: string): Promise<{ accessToken: string }>;
+  authorizationUrl(input: { state: string; codeChallenge: string }): string;
+  exchangeCode(code: string, codeVerifier?: string): Promise<{ accessToken: string }>;
   listProjects(userAccessToken: string): Promise<GcpProjectOption[]>;
   provision(input: GcpProvisioningInput): Promise<ProvisionedGcpConnection>;
   deprovision(input: GcpDeprovisioningInput): Promise<void>;

@@ -52,6 +52,21 @@ export async function requireOrgManagerAccess(input: {
   return access;
 }
 
+export async function hasOrgManagerAccess(input: {
+  userId: string | null | undefined;
+  orgId: string;
+}): Promise<boolean> {
+  if (!input.userId) return false;
+  const membership = await db.query.orgMembers.findFirst({
+    where: and(
+      eq(schema.orgMembers.userId, input.userId),
+      eq(schema.orgMembers.orgId, input.orgId),
+    ),
+    columns: { role: true },
+  });
+  return !!membership && canManageOrg(membership.role);
+}
+
 export async function requireProjectManagerAccess(input: {
   userId: string | null | undefined;
   preferredOrgId: string | null;

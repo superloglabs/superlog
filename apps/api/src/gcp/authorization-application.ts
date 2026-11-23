@@ -18,6 +18,7 @@ export async function startGcpAuthorization(input: {
   repository: GcpAuthorizationRepository;
   gateway: GcpGateway;
   signState: (authorizationId: string) => string;
+  codeChallenge: (authorizationId: string) => string;
   now?: Date;
 }): Promise<{ session: GcpAuthorizationSessionRecord; url: string }> {
   const now = input.now ?? new Date();
@@ -28,13 +29,17 @@ export async function startGcpAuthorization(input: {
   });
   return {
     session,
-    url: input.gateway.authorizationUrl({ state: input.signState(session.id) }),
+    url: input.gateway.authorizationUrl({
+      state: input.signState(session.id),
+      codeChallenge: input.codeChallenge(session.id),
+    }),
   };
 }
 
 export async function completeGcpAuthorization(input: {
   authorizationId: string;
   code: string;
+  codeVerifier: string;
   repository: GcpAuthorizationRepository;
   gateway: GcpGateway;
   now?: Date;
@@ -51,7 +56,7 @@ export async function completeGcpAuthorization(input: {
     throw new GcpAuthorizationError("expired", "GCP authorization expired");
   }
   try {
-    const { accessToken } = await input.gateway.exchangeCode(input.code);
+    const { accessToken } = await input.gateway.exchangeCode(input.code, input.codeVerifier);
     const projects = (await input.gateway.listProjects(accessToken)).sort(
       (left, right) =>
         left.displayName.localeCompare(right.displayName) ||

@@ -23,6 +23,9 @@ export type ProjectMcpOAuthDiscovery = {
 export type ProjectMcpOAuthAttempt = {
   projectId: string;
   serverId: string;
+  // The dashboard user who started the attempt; null when it was started with
+  // a management key.
+  initiatingUserId: string | null;
   serverUrl: string;
   stateHash: string;
   codeVerifier: string;
@@ -136,6 +139,7 @@ export function createProjectMcpOAuthService(deps: {
       await deps.attempts.create({
         projectId: input.projectId,
         serverId: input.serverId,
+        initiatingUserId: input.actorUserId,
         serverUrl: server.url,
         stateHash: sha256(state),
         codeVerifier,
@@ -183,10 +187,21 @@ export function createProjectMcpOAuthService(deps: {
     async complete(input: {
       state: string;
       code: string;
+      // Decides whether the browser finishing the callback may complete this
+      // attempt. Checked before the code is exchanged.
+      authorize(attempt: { projectId: string; initiatingUserId: string | null }): Promise<boolean>;
     }): Promise<ProjectMcpServer> {
       const attempt = await deps.attempts.consume(input.state);
       if (!attempt || attempt.expiresAt <= now())
         throw new Error("OAuth attempt is invalid or expired");
+      if (
+        !(await input.authorize({
+          projectId: attempt.projectId,
+          initiatingUserId: attempt.initiatingUserId,
+        }))
+      ) {
+        throw new Error("OAuth attempt is invalid or expired");
+      }
       const server = await requireOAuthServer(deps.repository, attempt.projectId, attempt.serverId);
       if (server.url !== attempt.serverUrl) {
         throw new Error("OAuth server configuration changed after authorization started");
@@ -390,15 +405,33 @@ export function createDrizzleProjectMcpOAuthAttemptStore(): ProjectMcpOAuthAttem
         )
         .returning();
       if (!row) return null;
-      const parsed = JSON.parse(
+      return parseProjectMcpOAuthAttemptPayload(
         decryptIntegrationSecret({
           ciphertext: row.payloadCiphertext,
           nonce: row.payloadNonce,
           keyVersion: row.payloadKeyVersion,
         }),
-      ) as Omit<ProjectMcpOAuthAttempt, "expiresAt"> & { expiresAt: string };
-      return { ...parsed, expiresAt: new Date(parsed.expiresAt) };
+      );
     },
+  };
+}
+
+// Attempts stored before the initiator was recorded have no initiatingUserId
+// key. They cannot be tied to a user, so they are treated as invalid; a
+// management-key attempt stores an explicit null.
+export function parseProjectMcpOAuthAttemptPayload(json: string): ProjectMcpOAuthAttempt | null {
+  const parsed = JSON.parse(json) as Omit<
+    ProjectMcpOAuthAttempt,
+    "expiresAt" | "initiatingUserId"
+  > & {
+    expiresAt: string;
+    initiatingUserId?: string | null;
+  };
+  if (parsed.initiatingUserId === undefined) return null;
+  return {
+    ...parsed,
+    initiatingUserId: parsed.initiatingUserId,
+    expiresAt: new Date(parsed.expiresAt),
   };
 }
 

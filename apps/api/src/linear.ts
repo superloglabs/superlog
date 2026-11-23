@@ -35,9 +35,12 @@ import type { Hono } from "hono";
 import type { Context } from "hono";
 import { closeAgentPullRequestOnGithub, reopenAgentPullRequestOnGithub } from "./github.js";
 import { runResolvedIncidentSideEffectsForIncident } from "./incidents/resolution-side-effects.js";
+import {
+  type IntegrationCallbackDependencies,
+  authorizeIntegrationCallback,
+} from "./integration-install-authorization.js";
 import { logger } from "./logger.js";
 import { requireProjectManagerContext } from "./org-authorization-http.js";
-import { hasProjectManagerAccess } from "./org-authorization.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 import { buildAppWebUrl, buildIncidentWebUrl } from "./project-web-route.js";
 
@@ -64,8 +67,11 @@ export function buildLinearAuthorizeUrl(args: {
   return url.toString();
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
-export function mountLinearPublic(app: Hono<any>): void {
+export function mountLinearPublic(
+  // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
+  app: Hono<any>,
+  dependencies: Partial<IntegrationCallbackDependencies> = {},
+): void {
   const clientId = process.env.LINEAR_CLIENT_ID;
   const clientSecret = process.env.LINEAR_CLIENT_SECRET;
   const appWebhookSecret = process.env.LINEAR_WEBHOOK_SECRET;
@@ -93,10 +99,12 @@ export function mountLinearPublic(app: Hono<any>): void {
     const decoded = verifyState(state, stateSecret);
     if (!decoded) return c.json({ error: "invalid state" }, 400);
     if (
-      !(await hasProjectManagerAccess({
-        userId: decoded.userId,
+      !(await authorizeIntegrationCallback({
+        headers: c.req.raw.headers,
+        initiatingUserId: decoded.userId,
         preferredOrgId: decoded.orgId,
         projectId: decoded.projectId,
+        dependencies,
       }))
     ) {
       return c.redirect(buildAppWebUrl(webOrigin, "/settings?linear=error"), 302);
