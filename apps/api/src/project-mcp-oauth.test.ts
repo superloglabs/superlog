@@ -6,6 +6,7 @@ import {
   type ProjectMcpOAuthAttempt,
   createFetchProjectMcpOAuthHttp,
   createProjectMcpOAuthService,
+  parseProjectMcpOAuthAttemptPayload,
 } from "./project-mcp-oauth.js";
 
 function oauthServer(): ProjectMcpServer {
@@ -651,4 +652,33 @@ test("OAuth completion is refused before the code exchange when the browser may 
   );
   assert.deepEqual(seen, [{ projectId: "project-1", initiatingUserId: "user-1" }]);
   assert.equal(exchangeCalled, false);
+});
+
+test("stored OAuth attempts without a recorded initiator are not resumed", () => {
+  const base = {
+    projectId: "project-1",
+    serverId: "server-1",
+    serverUrl: "https://linear.example/mcp",
+    stateHash: "hash",
+    codeVerifier: "verifier",
+    redirectUri: "https://api.superlog.sh/api/agent-mcp-oauth/callback",
+    clientId: "client",
+    clientSecret: null,
+    tokenEndpoint: "https://auth.example/token",
+    authorizationServer: "https://auth.example",
+    resource: "https://linear.example/mcp",
+    scopes: ["issues:read"],
+    expiresAt: "2026-07-14T10:10:00.000Z",
+  };
+  assert.equal(parseProjectMcpOAuthAttemptPayload(JSON.stringify(base)), null);
+  assert.equal(
+    parseProjectMcpOAuthAttemptPayload(JSON.stringify({ ...base, initiatingUserId: null }))
+      ?.initiatingUserId,
+    null,
+  );
+  const fromUser = parseProjectMcpOAuthAttemptPayload(
+    JSON.stringify({ ...base, initiatingUserId: "user-1" }),
+  );
+  assert.equal(fromUser?.initiatingUserId, "user-1");
+  assert.deepEqual(fromUser?.expiresAt, new Date("2026-07-14T10:10:00.000Z"));
 });

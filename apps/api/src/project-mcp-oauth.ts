@@ -405,22 +405,33 @@ export function createDrizzleProjectMcpOAuthAttemptStore(): ProjectMcpOAuthAttem
         )
         .returning();
       if (!row) return null;
-      const parsed = JSON.parse(
+      return parseProjectMcpOAuthAttemptPayload(
         decryptIntegrationSecret({
           ciphertext: row.payloadCiphertext,
           nonce: row.payloadNonce,
           keyVersion: row.payloadKeyVersion,
         }),
-      ) as Omit<ProjectMcpOAuthAttempt, "expiresAt" | "initiatingUserId"> & {
-        expiresAt: string;
-        initiatingUserId?: string | null;
-      };
-      return {
-        ...parsed,
-        initiatingUserId: parsed.initiatingUserId ?? null,
-        expiresAt: new Date(parsed.expiresAt),
-      };
+      );
     },
+  };
+}
+
+// Attempts stored before the initiator was recorded have no initiatingUserId
+// key. They cannot be tied to a user, so they are treated as invalid; a
+// management-key attempt stores an explicit null.
+export function parseProjectMcpOAuthAttemptPayload(json: string): ProjectMcpOAuthAttempt | null {
+  const parsed = JSON.parse(json) as Omit<
+    ProjectMcpOAuthAttempt,
+    "expiresAt" | "initiatingUserId"
+  > & {
+    expiresAt: string;
+    initiatingUserId?: string | null;
+  };
+  if (parsed.initiatingUserId === undefined) return null;
+  return {
+    ...parsed,
+    initiatingUserId: parsed.initiatingUserId,
+    expiresAt: new Date(parsed.expiresAt),
   };
 }
 
