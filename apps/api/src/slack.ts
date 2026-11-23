@@ -2019,7 +2019,13 @@ async function handleChatEvent(
     }
     const row = installations.find((i) => i.id === resolution.installation.id) ?? null;
     if (!row) return;
-    target = { projectId: row.projectId, installationId: row.id, installation: row };
+    // The routed row picks the project. Replies go through the workspace's
+    // most recently installed row: each install mints a new bot token and
+    // invalidates the previous one, so the routed org's own row may hold a
+    // dead token when another org installed later. listInstallationsForTeam
+    // orders by install recency.
+    const tokenRow = installations[0] ?? row;
+    target = { projectId: row.projectId, installationId: tokenRow.id, installation: tokenRow };
   }
   // A cut-over project's chats are answered by its Superlog application
   // workspace, which receives the same events.

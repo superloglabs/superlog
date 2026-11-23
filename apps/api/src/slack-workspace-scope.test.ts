@@ -324,3 +324,49 @@ test("a later org connecting the same Slack workspace does not take over chat ro
   assert.equal((await chatsFor(firstProject.project.id)).length, 2);
   assert.equal((await chatsFor(laterProject.project.id)).length, 0);
 });
+
+test("chats routed to the first org reply through the workspace's newest bot token", async () => {
+  const fetchMock = mock.method(globalThis, "fetch", async () =>
+    Response.json({ ok: true, ts: "1700000000.000100" }),
+  );
+  const teamId = `T${tag()}`;
+  const first = await seedOrg();
+  const later = await seedOrg();
+  const firstProject = await seedSlackProject({
+    orgId: first.org.id,
+    teamId,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+  });
+  const laterProject = await seedSlackProject({
+    orgId: later.org.id,
+    teamId,
+    createdAt: new Date("2026-02-01T00:00:00Z"),
+  });
+
+  await handleSlackEventEnvelope({
+    type: "event_callback",
+    event_id: `Ev${tag()}`,
+    team_id: teamId,
+    event: {
+      type: "app_mention",
+      text: "<@UBOT> why is checkout slow?",
+      channel: `C${tag()}`,
+      user: "UHUMAN",
+      ts: `1700000000.${tag()}`,
+    },
+  });
+
+  const chats = await db.query.agentChats.findMany({
+    where: eq(schema.agentChats.projectId, firstProject.project.id),
+  });
+  assert.equal(chats.length, 1);
+  assert.equal(chats[0]?.slackInstallationId, laterProject.installation.id);
+  const tokens = fetchMock.mock.calls
+    .filter((call) => String(call.arguments[0]).includes("chat.postMessage"))
+    .map((call) => {
+      const init = call.arguments[1] as RequestInit | undefined;
+      return new Headers(init?.headers).get("authorization");
+    });
+  assert.ok(tokens.length > 0);
+  assert.ok(tokens.every((t) => t === `Bearer ${laterProject.installation.botAccessToken}`));
+});
