@@ -394,9 +394,12 @@ async function handleRefreshGrant(c: Context, cfg: McpConfig, form: Record<strin
     throw error;
   }
   if (!tokens) {
-    log.error(
-      { tokenId: row.id, userId: row.userId, clientId: row.clientId },
-      "MCP refresh token already claimed: possible replay or concurrent rotation",
+    // Another request rotated this token first. The claim waits on that
+    // rotation's row lock, so its new pair is committed and revoked here too.
+    const revoked = await revokeMcpOauthTokenFamily({ userId: row.userId, clientId: row.clientId });
+    log.warn(
+      { tokenId: row.id, userId: row.userId, clientId: row.clientId, revoked },
+      "MCP refresh token reused concurrently: revoked the client's tokens for this user",
     );
     return oauthError(c, 400, "invalid_grant", "refresh token already used");
   }

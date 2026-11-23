@@ -67,11 +67,12 @@ export function describeRedirectUri(uri: string): RedirectDescription | null {
   return { kind: "app", target: scheme, trusted: KNOWN_APP_SCHEMES.has(scheme) };
 }
 
+// Any letter outside ASCII counts as a claim, since lookalike letters from
+// other scripts can spell a known name without matching it.
 export function claimsKnownClientName(name: string): boolean {
-  const normalized = name
-    .normalize("NFKC")
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "");
+  const folded = name.normalize("NFKC").toLowerCase();
+  if ([...folded].some((ch) => ch.charCodeAt(0) > 0x7f)) return true;
+  const normalized = folded.replace(/[^a-z0-9]/g, "");
   return KNOWN_CLIENT_NAME_TOKENS.some((token) => normalized.includes(token));
 }
 

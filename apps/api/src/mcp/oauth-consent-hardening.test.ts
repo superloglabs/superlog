@@ -136,6 +136,29 @@ test("reusing a rotated refresh token revokes every token in the grant", async (
   assert.equal(afterReplay.status, 400);
 });
 
+test("a concurrent reuse that loses the rotation race revokes the grant", async () => {
+  const { user, project } = await seedUserProject();
+  const client = await seedClient("Acme Widgets", ["http://127.0.0.1/callback"]);
+  const { refreshPlaintext } = await seedToken({
+    clientId: client.id,
+    userId: user.id,
+    projectId: project.id,
+  });
+  const app = tokenApp();
+
+  const results = await Promise.all([
+    refresh(app, client.id, refreshPlaintext),
+    refresh(app, client.id, refreshPlaintext),
+  ]);
+  assert.deepEqual(results.map((r) => r.status).sort(), [200, 400]);
+
+  const rows = await db.query.mcpOauthTokens.findMany({
+    where: eq(schema.mcpOauthTokens.clientId, client.id),
+  });
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every((row) => row.revokedAt !== null));
+});
+
 test("reuse leaves the user's tokens for other clients alone", async () => {
   const { user, project } = await seedUserProject();
   const client = await seedClient("Acme Widgets", ["http://127.0.0.1/callback"]);

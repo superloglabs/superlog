@@ -62,6 +62,13 @@ test("known client names are detected through spacing and case", () => {
   assert.equal(claimsKnownClientName("Acme Widgets"), false);
 });
 
+test("names with lookalike letters count as a known-name claim", () => {
+  // Cyrillic a and o in place of the Latin letters.
+  assert.equal(claimsKnownClientName("Cl\u0430ude"), true);
+  assert.equal(claimsKnownClientName("C\u043edex"), true);
+  assert.equal(claimsKnownClientName("Acme Widgets \u00e9"), true);
+});
+
 test("a known name on an unknown web redirect is marked unverified", () => {
   const d = describeClientForConsent(
     { name: "Claude Code", redirectUris: ["https://widgets.example/cb"] },
