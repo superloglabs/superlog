@@ -64,7 +64,18 @@ type MeResponse = {
   project: { id: string; name: string; slug: string };
 };
 
-type ClientInfo = { id: string; name: string };
+type ClientInfo = {
+  id: string;
+  name: string;
+  verified?: boolean;
+  redirect?: { kind: "loopback" | "app" | "web"; target: string; trusted: boolean } | null;
+};
+
+function redirectLabel(redirect: NonNullable<ClientInfo["redirect"]>): string {
+  if (redirect.kind === "loopback") return `${redirect.target} (this computer)`;
+  if (redirect.kind === "app") return `${redirect.target}:// app link`;
+  return redirect.target;
+}
 
 function ConsentCard({ params }: { params: AuthorizeParams }) {
   const requestedScopes = params.scope?.split(/\s+/).filter(Boolean) ?? [];
@@ -75,6 +86,7 @@ function ConsentCard({ params }: { params: AuthorizeParams }) {
     | { kind: "loading" }
     | { kind: "ready" }
     | { kind: "working" }
+    | { kind: "denied" }
     | { kind: "error"; message: string }
   >({ kind: "loading" });
 
@@ -84,7 +96,12 @@ function ConsentCard({ params }: { params: AuthorizeParams }) {
       try {
         const [meRes, clientRes] = await Promise.all([
           fetch(`${API_URL}/api/me`, { credentials: "include" }),
-          fetch(`${API_URL}/api/mcp/oauth/client/${params.clientId}`, { credentials: "include" }),
+          fetch(
+            `${API_URL}/api/mcp/oauth/client/${encodeURIComponent(params.clientId)}?${new URLSearchParams(
+              { redirect_uri: params.redirectUri },
+            )}`,
+            { credentials: "include" },
+          ),
         ]);
         if (!meRes.ok) throw new Error(`me: ${meRes.status}`);
         if (!clientRes.ok) throw new Error(`client: ${clientRes.status}`);
@@ -103,7 +120,7 @@ function ConsentCard({ params }: { params: AuthorizeParams }) {
     return () => {
       cancelled = true;
     };
-  }, [params.clientId]);
+  }, [params.clientId, params.redirectUri]);
 
   async function decide(decision: "allow" | "deny") {
     if (!me) return;
@@ -130,7 +147,11 @@ function ConsentCard({ params }: { params: AuthorizeParams }) {
         setState({ kind: "error", message: `${res.status}: ${body}` });
         return;
       }
-      const { redirect_uri } = (await res.json()) as { redirect_uri: string };
+      const { redirect_uri } = (await res.json()) as { redirect_uri: string | null };
+      if (!redirect_uri) {
+        setState({ kind: "denied" });
+        return;
+      }
       window.location.href = redirect_uri;
     } catch (err) {
       setState({
@@ -144,6 +165,13 @@ function ConsentCard({ params }: { params: AuthorizeParams }) {
     return (
       <Tile>
         <p className="text-[13px] text-muted">Loading…</p>
+      </Tile>
+    );
+  }
+  if (state.kind === "denied") {
+    return (
+      <Tile>
+        <p className="text-[13px] text-fg">Access denied. You can close this window.</p>
       </Tile>
     );
   }
@@ -162,8 +190,28 @@ function ConsentCard({ params }: { params: AuthorizeParams }) {
           <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted">
             client
           </span>
-          <div className="text-[15px] font-medium text-fg">{client?.name ?? "MCP client"}</div>
+          <div className="flex items-center gap-2">
+            <div className="text-[15px] font-medium text-fg">{client?.name ?? "MCP client"}</div>
+            {client?.verified ? null : <Chip tone="warning">Unverified</Chip>}
+          </div>
         </div>
+
+        {client?.redirect ? (
+          <div className="flex flex-col gap-2">
+            <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted">
+              sends access to
+            </span>
+            <div className="break-all font-mono text-[15px] font-medium text-fg">
+              {redirectLabel(client.redirect)}
+            </div>
+            {client.redirect.trusted ? null : (
+              <p className="text-[13px] text-warning">
+                Superlog has not verified this client. Only authorize it if you started this
+                connection and expected access to go to this address.
+              </p>
+            )}
+          </div>
+        ) : null}
 
         <div className="flex flex-col gap-2">
           <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted">

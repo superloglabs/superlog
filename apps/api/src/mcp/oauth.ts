@@ -15,6 +15,11 @@ import { logger } from "../logger.js";
 import { resolveActiveOrgContext } from "../org-context.js";
 import type { McpConfig } from "./config.js";
 import {
+  describeClientForConsent,
+  isLoopbackHostname,
+  shouldRedirectOnDeny,
+} from "./oauth-client-trust.js";
+import {
   MCP_SUPPORTED_SCOPES,
   mcpRefreshScopeRejectionLogLevel,
   resolveMcpOauthScope,
@@ -180,11 +185,15 @@ export function mountOauthDecision(
 ) {
   app.get("/api/mcp/oauth/client/:clientId", async (c) => {
     const clientId = c.req.param("clientId");
+    const redirectUri = c.req.query("redirect_uri") ?? null;
     const client = await db.query.mcpOauthClients.findFirst({
       where: eq(schema.mcpOauthClients.id, clientId),
     });
     if (!client) throw new HTTPException(404, { message: "client not found" });
-    return c.json({ id: client.id, name: client.name });
+    if (redirectUri !== null && !client.redirectUris.includes(redirectUri)) {
+      throw new HTTPException(400, { message: "redirect_uri not registered" });
+    }
+    return c.json({ id: client.id, ...describeClientForConsent(client, redirectUri) });
   });
 
   app.post("/api/mcp/oauth/decision", async (c) => {
@@ -216,6 +225,7 @@ export function mountOauthDecision(
     if (paramsErr) throw new HTTPException(400, { message: paramsErr.description });
 
     if (body.decision === "deny") {
+      if (!shouldRedirectOnDeny(params.redirectUri)) return c.json({ redirect_uri: null });
       const redir = buildErrorRedirect(params, "access_denied", "user denied consent");
       return c.json({ redirect_uri: redir });
     }
@@ -330,7 +340,16 @@ async function handleRefreshGrant(c: Context, cfg: McpConfig, form: Record<strin
     where: eq(schema.mcpOauthTokens.refreshHash, refreshHash),
   });
   if (!row) return oauthError(c, 400, "invalid_grant", "refresh token not found");
-  if (row.revokedAt) return oauthError(c, 400, "invalid_grant", "refresh token revoked");
+  if (row.revokedAt) {
+    // Rotation revokes the old refresh token, so a revoked one means the same
+    // token was used twice. RFC 9700 §4.14.2: revoke the whole grant.
+    const revoked = await revokeMcpOauthTokenFamily({ userId: row.userId, clientId: row.clientId });
+    log.warn(
+      { tokenId: row.id, userId: row.userId, clientId: row.clientId, revoked },
+      "MCP refresh token reused: revoked the client's tokens for this user",
+    );
+    return oauthError(c, 400, "invalid_grant", "refresh token revoked");
+  }
   if (row.clientId !== clientId) return oauthError(c, 400, "invalid_grant", "client_id mismatch");
   if (row.refreshExpiresAt && row.refreshExpiresAt.getTime() < Date.now()) {
     return oauthError(c, 400, "invalid_grant", "refresh token expired");
@@ -447,6 +466,26 @@ export async function rotateMcpOauthRefreshToken(
     });
     return tokenResponse(access, refresh, params.scope);
   });
+}
+
+// Token rows do not record which authorization they descend from, so the
+// family is every token the user granted to this client.
+export async function revokeMcpOauthTokenFamily(params: {
+  userId: string;
+  clientId: string;
+}): Promise<number> {
+  const revoked = await db
+    .update(schema.mcpOauthTokens)
+    .set({ revokedAt: new Date() })
+    .where(
+      and(
+        eq(schema.mcpOauthTokens.userId, params.userId),
+        eq(schema.mcpOauthTokens.clientId, params.clientId),
+        isNull(schema.mcpOauthTokens.revokedAt),
+      ),
+    )
+    .returning({ id: schema.mcpOauthTokens.id });
+  return revoked.length;
 }
 
 async function issueTokens(params: McpTokenIssueParams): Promise<McpTokenResponse> {
@@ -588,10 +627,11 @@ export function isValidRedirectUri(uri: string): boolean {
   } catch {
     return false;
   }
+  // RFC 6749 §3.1.2: no fragment. Credentials in the authority make the host
+  // shown on the consent screen misleading.
+  if (uri.includes("#") || u.username || u.password) return false;
   if (u.protocol === "https:") return true;
-  if (u.protocol === "http:") {
-    return u.hostname === "localhost" || u.hostname === "127.0.0.1";
-  }
+  if (u.protocol === "http:") return isLoopbackHostname(u.hostname);
   // RFC 8252 §7.1: native apps (Cursor, VS Code, Claude Desktop, …) register
   // private-use URI schemes as their OAuth callbacks — e.g.
   // cursor://anysphere.cursor-mcp/oauth/callback. These are public clients;
