@@ -23,7 +23,7 @@ const artifact = {
   id: "artifact-1",
   projectId: "project-1",
   platform: "android",
-  release: "juno@1.2.3",
+  release: "acme-mobile@1.2.3",
   dist: null,
   debugId: null,
   bundleFile: "index.android.bundle",
@@ -92,7 +92,7 @@ test("symbolicateStacktraceWithArtifact infers original function names from sour
 test("symbolicationAttrsForSample extracts release, platform, dist, and debug id", () => {
   const sample = {
     kind: "log",
-    service: "juno",
+    service: "acme-mobile",
     severity: "ERROR",
     message: "bad",
     body: "bad",
@@ -102,7 +102,7 @@ test("symbolicationAttrsForSample extracts release, platform, dist, and debug id
     stacktrace: "TypeError: bad\n    at index.android.bundle:1:1",
     seenAt: "2026-06-02T00:00:00.000Z",
     logAttrs: {
-      "service.version": "juno@1.2.3",
+      "service.version": "acme-mobile@1.2.3",
       "device.platform": "Android",
       "expo.update_id": "update-1",
       "sourcemap.debug_id": "debug-1",
@@ -112,7 +112,7 @@ test("symbolicationAttrsForSample extracts release, platform, dist, and debug id
 
   assert.deepEqual(symbolicationAttrsForSample(sample), {
     debugId: "debug-1",
-    release: "juno@1.2.3",
+    release: "acme-mobile@1.2.3",
     dist: "update-1",
     platform: "android",
   });
@@ -121,7 +121,7 @@ test("symbolicationAttrsForSample extracts release, platform, dist, and debug id
 test("symbolicateIssueSample loads matching source map object and symbolicates", async () => {
   const sample = {
     kind: "log",
-    service: "juno",
+    service: "acme-mobile",
     severity: "ERROR",
     message: "bad",
     body: "bad",
@@ -131,7 +131,7 @@ test("symbolicateIssueSample loads matching source map object and symbolicates",
     stacktrace: "TypeError: bad\n    at useMemoCache (index.android.bundle:1:1)",
     seenAt: "2026-06-02T00:00:00.000Z",
     logAttrs: {
-      "service.version": "juno@1.2.3",
+      "service.version": "acme-mobile@1.2.3",
       "device.platform": "android",
     },
     resourceAttrs: null,
@@ -186,7 +186,7 @@ test("symbolicateTelemetrySample symbolicates logs without issue rows", async ()
     sample: {
       stacktrace: "TypeError: bad\n    at useMemoCache (index.android.bundle:1:1)",
       logAttrs: {
-        "service.version": "juno@1.2.3",
+        "service.version": "acme-mobile@1.2.3",
         "device.platform": "android",
       },
       resourceAttrs: null,
@@ -246,7 +246,7 @@ test("findSourceMapArtifact prefers artifact matching generated stack frame file
     projectId: "project-1",
     attrs: {
       debugId: null,
-      release: "juno@1.2.3",
+      release: "acme-mobile@1.2.3",
       dist: null,
       platform: "web",
     },

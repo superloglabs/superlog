@@ -587,17 +587,17 @@ test("needsMobileRegressionRepair asks for a decision on Revyl-enabled mobile PR
   assert.equal(
     needsMobileRegressionRepair({
       revylEnabled: true,
-      service: "juno-mobile",
+      service: "acme-mobile",
       result: {
         state: "complete",
         summary: "x",
         pr: {
-          selectedRepoFullName: "MarshallBear1/chronic-care-chat",
-          branchName: "superlog/fix-chat",
+          selectedRepoFullName: "acme/mobile-app",
+          branchName: "superlog/fix-checkout",
           baseBranch: "main",
           validationPassed: true,
           openStatus: "pending",
-          changedFiles: ["app/app/chat.tsx"],
+          changedFiles: ["app/app/checkout.tsx"],
         },
       },
     }),
@@ -608,17 +608,17 @@ test("needsMobileRegressionRepair asks for a decision on Revyl-enabled mobile PR
 test("needsMobileRegressionRepair allows created, skipped, or not-applicable decisions", () => {
   const base = {
     revylEnabled: true,
-    service: "juno-mobile",
+    service: "acme-mobile",
     result: {
       state: "complete" as const,
       summary: "x",
       pr: {
-        selectedRepoFullName: "MarshallBear1/chronic-care-chat",
-        branchName: "superlog/fix-chat",
+        selectedRepoFullName: "acme/mobile-app",
+        branchName: "superlog/fix-checkout",
         baseBranch: "main",
         validationPassed: true,
         openStatus: "pending" as const,
-        changedFiles: ["app/app/chat.tsx"],
+        changedFiles: ["app/app/checkout.tsx"],
       },
     },
   };
@@ -678,7 +678,7 @@ test("needsMobileRegressionRepair ignores non-Revyl or non-mobile results", () =
   assert.equal(
     needsMobileRegressionRepair({
       revylEnabled: false,
-      service: "juno-mobile",
+      service: "acme-mobile",
       result,
     }),
     false,
@@ -711,7 +711,7 @@ test("mobileRegressionGateState defers when integration lookup fails for mobile 
   assert.equal(
     mobileRegressionGateState({
       toolLookup: "failed",
-      service: "juno-mobile",
+      service: "acme-mobile",
       result,
     }),
     "defer_lookup",
@@ -754,7 +754,7 @@ test("mobileRegressionGateState repairs only when enabled mobile PRs lack a deci
   assert.equal(
     mobileRegressionGateState({
       toolLookup: "disabled",
-      service: "juno-mobile",
+      service: "acme-mobile",
       result,
     }),
     "allow",
@@ -762,7 +762,7 @@ test("mobileRegressionGateState repairs only when enabled mobile PRs lack a deci
   assert.equal(
     mobileRegressionGateState({
       toolLookup: "enabled",
-      service: "juno-mobile",
+      service: "acme-mobile",
       result: {
         ...result,
         mobileRegressionTest: { status: "created", testId: "test_123" },

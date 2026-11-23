@@ -202,7 +202,7 @@ test("mapAutumnFeatures tolerates a missing/empty balances object", () => {
 test("isFreePlan: only true when every active subscription is the free plan", () => {
   // Free org (auto-enabled free subscription)
   assert.equal(isFreePlan({ subscriptions: [{ plan_id: "free", status: "active" }] }), true);
-  // Paying org (grandfathered) — the Trellis case: hard-capped feature but NOT free
+  // Paying org (grandfathered) — hard-capped feature but NOT free
   assert.equal(
     isFreePlan({ subscriptions: [{ plan_id: "grandfathered", status: "active" }] }),
     false,
