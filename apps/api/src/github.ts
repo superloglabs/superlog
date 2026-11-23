@@ -24,7 +24,7 @@ import {
   syncLoopsContactsForOrg,
   unblockAgentRunsAfterGithubAccess,
 } from "@superlog/db";
-import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Hono } from "hono";
 import type { Context } from "hono";
 import { getAuthenticatedUserId as getDefaultAuthenticatedUserId } from "./authenticated-user.js";
@@ -612,28 +612,16 @@ async function handleWebhook(
       const revokedReason: schema.GithubInstallationWebhookRevokeReason =
         action === "deleted" ? "github_deleted" : "github_suspended";
       // Only rows active right now get a reason. Rows that were already
-      // revoked (by anyone, including an earlier webhook) lose theirs, so a
-      // later unsuspend restores at most the rows this event revoked.
-      await db.transaction(async (tx) => {
-        await tx
-          .update(schema.githubInstallations)
-          .set({ revokedReason: null })
-          .where(
-            and(
-              eq(schema.githubInstallations.installationId, installationId),
-              isNotNull(schema.githubInstallations.revokedAt),
-            ),
-          );
-        await tx
-          .update(schema.githubInstallations)
-          .set({ revokedAt: new Date(), revokedReason })
-          .where(
-            and(
-              eq(schema.githubInstallations.installationId, installationId),
-              isNull(schema.githubInstallations.revokedAt),
-            ),
-          );
-      });
+      // revoked keep theirs, so a repeated delivery changes nothing.
+      await db
+        .update(schema.githubInstallations)
+        .set({ revokedAt: new Date(), revokedReason })
+        .where(
+          and(
+            eq(schema.githubInstallations.installationId, installationId),
+            isNull(schema.githubInstallations.revokedAt),
+          ),
+        );
       return;
     }
     if (action === "unsuspend") {
@@ -808,7 +796,8 @@ async function resumeBlockedAgentRunsForOrg(
 // Re-activates rows that this webhook handler revoked for an uninstall or
 // suspend. Rows revoked by a user, an operator or any other path have no
 // revoked_reason and are left alone. A row is skipped when its project or
-// org has linked the installation again since then.
+// org has an active row for the installation or has linked it again since
+// the row was created, even if that newer row was later revoked.
 async function restoreWebhookRevokedInstallations(installationId: number): Promise<void> {
   await db.execute(sql`
     UPDATE github_installations AS gi
@@ -817,12 +806,13 @@ async function restoreWebhookRevokedInstallations(installationId: number): Promi
       AND gi.revoked_at IS NOT NULL
       AND gi.revoked_reason IN ('github_deleted', 'github_suspended')
       AND NOT EXISTS (
-        SELECT 1 FROM github_installations AS active
-        WHERE active.installation_id = gi.installation_id
-          AND active.revoked_at IS NULL
+        SELECT 1 FROM github_installations AS other
+        WHERE other.installation_id = gi.installation_id
+          AND other.id <> gi.id
+          AND (other.revoked_at IS NULL OR other.created_at > gi.created_at)
           AND (
-            (gi.project_id IS NOT NULL AND active.project_id = gi.project_id)
-            OR (gi.project_id IS NULL AND active.project_id IS NULL AND active.org_id = gi.org_id)
+            (gi.project_id IS NOT NULL AND other.project_id = gi.project_id)
+            OR (gi.project_id IS NULL AND other.project_id IS NULL AND other.org_id = gi.org_id)
           )
       )
   `);

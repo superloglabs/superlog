@@ -1224,11 +1224,74 @@ test("installation webhooks only restore rows they revoked themselves", async ()
   // A later suspend only marks the row it revoked, so unsuspend restores one
   // row per org rather than every row an earlier event revoked.
   assert.equal((await send("suspend")).status, 200);
-  assert.equal((await load(active.id))?.revokedReason, null);
   assert.equal((await load(relinked.id))?.revokedReason, "github_suspended");
   assert.equal((await send("unsuspend")).status, 200);
   assert.ok((await load(active.id))?.revokedAt);
   assert.equal((await load(relinked.id))?.revokedAt, null);
+});
+
+test("a repeated suspend delivery keeps the rows restorable", async () => {
+  const tag = `test-install-dup-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+  const installationId = Math.floor(Date.now() / 1000) + Math.floor(Math.random() * 1_000_000);
+  const [org] = await db.insert(schema.orgs).values({ name: tag, slug: tag }).returning();
+  if (!org) throw new Error("failed to seed org");
+  orgIds.push(org.id);
+  const [row] = await db
+    .insert(schema.githubInstallations)
+    .values({ orgId: org.id, installationId })
+    .returning();
+  if (!row) throw new Error("failed to seed installation");
+
+  const app = new Hono();
+  mountGithubPublic(app);
+  const send = (action: string, delivery: string) =>
+    postGithub(app, "installation", `${tag}-${delivery}`, {
+      action,
+      installation: { id: installationId, account: { login: "acme", type: "Organization" } },
+    });
+  const load = () =>
+    db.query.githubInstallations.findFirst({ where: eq(schema.githubInstallations.id, row.id) });
+
+  assert.equal((await send("suspend", "suspend-1")).status, 200);
+  assert.equal((await send("suspend", "suspend-2")).status, 200);
+  assert.equal((await load())?.revokedReason, "github_suspended");
+  assert.equal((await send("unsuspend", "unsuspend")).status, 200);
+  assert.equal((await load())?.revokedAt, null);
+});
+
+test("a row replaced by a later link stays revoked after the newer row is revoked by hand", async () => {
+  const tag = `test-install-superseded-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+  const installationId = Math.floor(Date.now() / 1000) + Math.floor(Math.random() * 1_000_000);
+  const [org] = await db.insert(schema.orgs).values({ name: tag, slug: tag }).returning();
+  if (!org) throw new Error("failed to seed org");
+  orgIds.push(org.id);
+  const [old] = await db
+    .insert(schema.githubInstallations)
+    .values({
+      orgId: org.id,
+      installationId,
+      revokedAt: new Date(Date.now() - 60_000),
+      revokedReason: "github_suspended",
+      createdAt: new Date(Date.now() - 120_000),
+    })
+    .returning();
+  const [replacement] = await db
+    .insert(schema.githubInstallations)
+    .values({ orgId: org.id, installationId, revokedAt: new Date(), revokedReason: null })
+    .returning();
+  if (!old || !replacement) throw new Error("failed to seed installations");
+
+  const app = new Hono();
+  mountGithubPublic(app);
+  const res = await postGithub(app, "installation", `${tag}-unsuspend`, {
+    action: "unsuspend",
+    installation: { id: installationId, account: { login: "acme", type: "Organization" } },
+  });
+  assert.equal(res.status, 200);
+  const load = (id: string) =>
+    db.query.githubInstallations.findFirst({ where: eq(schema.githubInstallations.id, id) });
+  assert.ok((await load(old.id))?.revokedAt);
+  assert.ok((await load(replacement.id))?.revokedAt);
 });
 
 test("agent PR webhooks from another installation do not touch the PR", async () => {
