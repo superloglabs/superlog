@@ -79,7 +79,7 @@ export const installUrlInputSchema = z.object({
     .url()
     .optional()
     .describe(
-      "Where to bounce the user after install. Host must be in the org's allowed_return_url_hosts allowlist; must be http(s); must not embed credentials.",
+      "Where to bounce the user after install. Host must be in the org's allowed_return_url_hosts allowlist; must be https; must not embed credentials. Used only after a successful install; failures return to Superlog.",
     ),
 });
 

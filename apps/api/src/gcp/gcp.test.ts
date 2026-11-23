@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { strict as assert } from "node:assert";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 import { closeDb, db, runMigrations, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
@@ -67,6 +67,10 @@ after(async () => {
   }
 });
 
+function signedInAs(userId: string | null) {
+  return { getAuthenticatedUserId: async () => userId };
+}
+
 async function seedProject() {
   const tag = `gcp-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
   const [org] = await db.insert(schema.orgs).values({ name: tag, slug: tag }).returning();
@@ -95,15 +99,19 @@ test("a project owner discovers Google projects before choosing one to connect",
     gcpProjectId: string;
     gcpProjectNumber: string | undefined;
   }> = [];
+  let codeChallenge: string | null = null;
   const gateway: GcpGateway = {
-    authorizationUrl({ state }) {
+    authorizationUrl({ state, codeChallenge: challenge }) {
+      codeChallenge = challenge;
       const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
       url.searchParams.set("state", state);
       url.searchParams.set("scope", "https://www.googleapis.com/auth/cloud-platform");
       return url.toString();
     },
-    async exchangeCode(code) {
+    async exchangeCode(code, codeVerifier) {
       assert.equal(code, "oauth-code");
+      assert.ok(codeVerifier);
+      assert.equal(createHash("sha256").update(codeVerifier).digest("base64url"), codeChallenge);
       return { accessToken: "temporary-user-token" };
     },
     async listProjects(accessToken) {
@@ -154,7 +162,7 @@ test("a project owner discovers Google projects before choosing one to connect",
     c.set("orgId", org.id);
     await next();
   });
-  mountGcpPublic(app, { config, gateway });
+  mountGcpPublic(app, { config, gateway, callbackAuth: signedInAs(user.id) });
   mountGcpAuthed(app, { config, gateway });
 
   const start = await app.request(`/api/projects/${project.id}/gcp/install-url`, {
@@ -342,7 +350,7 @@ test("a project owner reauthorizes with Google before disconnecting the current 
     await next();
   });
   mountGcpAuthed(app, { config, gateway });
-  mountGcpPublic(app, { config, gateway });
+  mountGcpPublic(app, { config, gateway, callbackAuth: signedInAs(user.id) });
 
   const start = await app.request(`/api/projects/${project.id}/gcp/disconnect-url`, {
     method: "POST",
@@ -436,7 +444,7 @@ test("failed Google Cloud provisioning hides provider details from customer resp
     c.set("orgId", org.id);
     await next();
   });
-  mountGcpPublic(app, { config, gateway });
+  mountGcpPublic(app, { config, gateway, callbackAuth: signedInAs(user.id) });
   mountGcpAuthed(app, {
     config,
     gateway,
@@ -510,7 +518,7 @@ test("denying Google consent marks the pending connection failed", async () => {
     c.set("orgId", org.id);
     await next();
   });
-  mountGcpPublic(app, { config, gateway });
+  mountGcpPublic(app, { config, gateway, callbackAuth: signedInAs(user.id) });
   mountGcpAuthed(app, { config, gateway });
 
   const start = await app.request(`/api/projects/${project.id}/gcp/install-url`, {
@@ -1450,4 +1458,75 @@ test("starting Google OAuth does not require a project id request body", async (
   assert.deepEqual(await response.json(), {
     url: "https://accounts.google.com/o/oauth2/v2/auth",
   });
+});
+
+test("the Google callback completes only in the browser of the user who started it", async () => {
+  const { org, user, project } = await seedProject();
+  const other = await seedProject();
+  let exchanges = 0;
+  const gateway: GcpGateway = {
+    authorizationUrl({ state }) {
+      return `https://accounts.google.com/o/oauth2/v2/auth?state=${encodeURIComponent(state)}`;
+    },
+    async exchangeCode() {
+      exchanges++;
+      return { accessToken: "temporary-user-token" };
+    },
+    async listProjects() {
+      return [];
+    },
+    async provision() {
+      throw new Error("not called");
+    },
+    async deprovision() {},
+  };
+  const app = new Hono<{ Variables: { userId: string; orgId: string | null } }>();
+  app.use("/api/*", async (c, next) => {
+    c.set("userId", user.id);
+    c.set("orgId", org.id);
+    await next();
+  });
+  mountGcpAuthed(app, { config, gateway });
+  const start = await app.request(`/api/projects/${project.id}/gcp/install-url`, {
+    method: "POST",
+  });
+  const { url } = (await start.json()) as { url: string };
+  const state = new URL(url).searchParams.get("state") ?? "";
+  const callbackPath = `/gcp/oauth/callback?code=oauth-code&state=${encodeURIComponent(state)}`;
+
+  for (const signedInUserId of [other.user.id, null]) {
+    const foreign = new Hono<{ Variables: { userId: string; orgId: string | null } }>();
+    mountGcpPublic(foreign, { config, gateway, callbackAuth: signedInAs(signedInUserId) });
+    const rejected = await foreign.request(callbackPath);
+    assert.equal(rejected.status, 302);
+    assert.equal(rejected.headers.get("location"), "https://app.example.com/connect/gcp?gcp=error");
+  }
+  assert.equal(exchanges, 0);
+  const pending = await db.query.gcpAuthorizationSessions.findFirst({
+    where: eq(schema.gcpAuthorizationSessions.projectId, project.id),
+  });
+  assert.equal(pending?.status, "pending");
+
+  const own = new Hono<{ Variables: { userId: string; orgId: string | null } }>();
+  mountGcpPublic(own, { config, gateway, callbackAuth: signedInAs(user.id) });
+  const accepted = await own.request(callbackPath);
+  assert.equal(new URL(accepted.headers.get("location") ?? "").searchParams.get("gcp"), "select");
+  assert.equal(exchanges, 1);
+});
+
+test("the Google callback gives the same answer for an unknown authorization", async () => {
+  const { user } = await seedProject();
+  const app = new Hono<{ Variables: { userId: string; orgId: string | null } }>();
+  mountGcpPublic(app, {
+    config,
+    gateway: {} as GcpGateway,
+    callbackAuth: signedInAs(user.id),
+  });
+  const state = signGcpState(randomUUID(), process.env.STATE_SIGNING_SECRET ?? "");
+
+  const response = await app.request(
+    `/gcp/oauth/callback?code=oauth-code&state=${encodeURIComponent(state)}`,
+  );
+
+  assert.equal(response.headers.get("location"), "https://app.example.com/connect/gcp?gcp=error");
 });

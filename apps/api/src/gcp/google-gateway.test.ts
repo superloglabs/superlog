@@ -17,13 +17,32 @@ const config: GcpConnectConfig = {
 
 test("customer authorization requests only the setup scopes the integration uses", () => {
   const gateway = new GoogleGcpGateway(config, fetch);
-  const url = new URL(gateway.authorizationUrl({ state: "signed-state" }));
+  const url = new URL(
+    gateway.authorizationUrl({ state: "signed-state", codeChallenge: "code-challenge" }),
+  );
 
   assert.deepEqual(url.searchParams.get("scope")?.split(" ").sort(), [
     "https://www.googleapis.com/auth/cloudplatformprojects",
     "https://www.googleapis.com/auth/logging.admin",
   ]);
   assert.equal(url.searchParams.get("state"), "signed-state");
+  assert.equal(url.searchParams.get("code_challenge"), "code-challenge");
+  assert.equal(url.searchParams.get("code_challenge_method"), "S256");
+});
+
+test("the code exchange sends the PKCE verifier", async () => {
+  const bodies: URLSearchParams[] = [];
+  const fetchImpl: typeof fetch = async (_input, init) => {
+    bodies.push(new URLSearchParams(String(init?.body)));
+    return Response.json({ access_token: "user-access-token" });
+  };
+  const gateway = new GoogleGcpGateway(config, fetchImpl);
+
+  const result = await gateway.exchangeCode("oauth-code", "code-verifier");
+
+  assert.equal(result.accessToken, "user-access-token");
+  assert.equal(bodies[0]?.get("code"), "oauth-code");
+  assert.equal(bodies[0]?.get("code_verifier"), "code-verifier");
 });
 
 test("project discovery returns every active project across Google result pages", async () => {

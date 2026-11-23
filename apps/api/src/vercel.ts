@@ -26,9 +26,12 @@ import {
 import { and, desc, eq, isNull, ne } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import {
+  type IntegrationCallbackDependencies,
+  authorizeIntegrationCallback,
+} from "./integration-install-authorization.js";
 import { logger } from "./logger.js";
 import { requireProjectManagerContext } from "./org-authorization-http.js";
-import { hasProjectManagerAccess } from "./org-authorization.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 import {
   VERCEL_SIGNALS,
@@ -219,7 +222,11 @@ async function teardownInstallation(
 
 export function mountVercelPublic(
   app: Hono<{ Variables: Vars }>,
-  deps: { config?: VercelConnectConfig | null; fetchImpl?: typeof fetch } = {},
+  deps: {
+    config?: VercelConnectConfig | null;
+    fetchImpl?: typeof fetch;
+    callbackAuth?: Partial<IntegrationCallbackDependencies>;
+  } = {},
 ): void {
   const config = deps.config !== undefined ? deps.config : vercelConfigFromEnv();
   const fetchImpl = deps.fetchImpl ?? fetch;
@@ -251,10 +258,12 @@ export function mountVercelPublic(
       return c.redirect(`${webOrigin}${connectResultPath("error")}`, 302);
     }
     if (
-      !(await hasProjectManagerAccess({
-        userId: decoded.userId,
+      !(await authorizeIntegrationCallback({
+        headers: c.req.raw.headers,
+        initiatingUserId: decoded.userId,
         preferredOrgId: decoded.orgId,
         projectId: decoded.projectId,
+        dependencies: deps.callbackAuth,
       }))
     ) {
       return c.redirect(`${webOrigin}${connectResultPath("error")}`, 302);

@@ -23,6 +23,9 @@ export type ProjectMcpOAuthDiscovery = {
 export type ProjectMcpOAuthAttempt = {
   projectId: string;
   serverId: string;
+  // The dashboard user who started the attempt; null when it was started with
+  // a management key.
+  initiatingUserId: string | null;
   serverUrl: string;
   stateHash: string;
   codeVerifier: string;
@@ -136,6 +139,7 @@ export function createProjectMcpOAuthService(deps: {
       await deps.attempts.create({
         projectId: input.projectId,
         serverId: input.serverId,
+        initiatingUserId: input.actorUserId,
         serverUrl: server.url,
         stateHash: sha256(state),
         codeVerifier,
@@ -183,10 +187,21 @@ export function createProjectMcpOAuthService(deps: {
     async complete(input: {
       state: string;
       code: string;
+      // Decides whether the browser finishing the callback may complete this
+      // attempt. Checked before the code is exchanged.
+      authorize(attempt: { projectId: string; initiatingUserId: string | null }): Promise<boolean>;
     }): Promise<ProjectMcpServer> {
       const attempt = await deps.attempts.consume(input.state);
       if (!attempt || attempt.expiresAt <= now())
         throw new Error("OAuth attempt is invalid or expired");
+      if (
+        !(await input.authorize({
+          projectId: attempt.projectId,
+          initiatingUserId: attempt.initiatingUserId,
+        }))
+      ) {
+        throw new Error("OAuth attempt is invalid or expired");
+      }
       const server = await requireOAuthServer(deps.repository, attempt.projectId, attempt.serverId);
       if (server.url !== attempt.serverUrl) {
         throw new Error("OAuth server configuration changed after authorization started");
@@ -396,8 +411,15 @@ export function createDrizzleProjectMcpOAuthAttemptStore(): ProjectMcpOAuthAttem
           nonce: row.payloadNonce,
           keyVersion: row.payloadKeyVersion,
         }),
-      ) as Omit<ProjectMcpOAuthAttempt, "expiresAt"> & { expiresAt: string };
-      return { ...parsed, expiresAt: new Date(parsed.expiresAt) };
+      ) as Omit<ProjectMcpOAuthAttempt, "expiresAt" | "initiatingUserId"> & {
+        expiresAt: string;
+        initiatingUserId?: string | null;
+      };
+      return {
+        ...parsed,
+        initiatingUserId: parsed.initiatingUserId ?? null,
+        expiresAt: new Date(parsed.expiresAt),
+      };
     },
   };
 }

@@ -11,10 +11,13 @@ import {
 } from "@superlog/db";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Context, Hono } from "hono";
+import {
+  type IntegrationCallbackDependencies,
+  authorizeIntegrationCallback,
+} from "./integration-install-authorization.js";
 import { logger } from "./logger.js";
 import { signState, verifyState } from "./oauth-state.js";
 import { requireProjectManagerContext } from "./org-authorization-http.js";
-import { hasProjectManagerAccess } from "./org-authorization.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 import { buildAppWebUrl } from "./project-web-route.js";
 
@@ -48,8 +51,11 @@ function config() {
   };
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
-export function mountNotionPublic(app: Hono<any>): void {
+export function mountNotionPublic(
+  // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
+  app: Hono<any>,
+  dependencies: Partial<IntegrationCallbackDependencies> = {},
+): void {
   const {
     clientId,
     clientSecret,
@@ -76,10 +82,12 @@ export function mountNotionPublic(app: Hono<any>): void {
     const decoded = verifyState(state, stateSecret);
     if (!decoded) return c.json({ error: "invalid state" }, 400);
     if (
-      !(await hasProjectManagerAccess({
-        userId: decoded.userId,
+      !(await authorizeIntegrationCallback({
+        headers: c.req.raw.headers,
+        initiatingUserId: decoded.userId,
         preferredOrgId: decoded.orgId,
         projectId: decoded.projectId,
+        dependencies,
       }))
     ) {
       return c.redirect(buildAppWebUrl(webOrigin, "/settings?notion=error"), 302);

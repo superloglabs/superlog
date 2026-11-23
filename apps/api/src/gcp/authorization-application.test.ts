@@ -31,8 +31,9 @@ test("a pending Google authorization and its signed state share one lifetime", a
     },
   } as unknown as GcpAuthorizationRepository;
   const gateway = {
-    authorizationUrl: ({ state }: { state: string }) => `https://example.com/oauth?state=${state}`,
-  } as GcpGateway;
+    authorizationUrl: ({ state }: { state: string; codeChallenge: string }) =>
+      `https://example.com/oauth?state=${state}`,
+  } as unknown as GcpGateway;
 
   await startGcpAuthorization({
     projectId: "project-id",
@@ -40,6 +41,7 @@ test("a pending Google authorization and its signed state share one lifetime", a
     repository,
     gateway,
     signState: () => "signed-state",
+    codeChallenge: () => "code-challenge",
     now,
   });
 

@@ -2,6 +2,10 @@ import { db, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import {
+  type IntegrationCallbackDependencies,
+  authorizeIntegrationCallback,
+} from "../integration-install-authorization.js";
 import { logger } from "../logger.js";
 import { requireProjectManagerContext } from "../org-authorization-http.js";
 import { hasProjectManagerAccess } from "../org-authorization.js";
@@ -29,7 +33,7 @@ import type {
 import { GCP_AUTHORIZATION_TTL_MS, GcpAuthorizationError } from "./domain.js";
 import { GoogleGcpGateway } from "./google-gateway.js";
 import { DrizzleGcpConnectionRepository } from "./repository.js";
-import { signGcpState, verifyGcpState } from "./state.js";
+import { gcpPkceChallenge, gcpPkceVerifier, signGcpState, verifyGcpState } from "./state.js";
 
 type Vars = { userId: string; orgId: string | null };
 
@@ -54,6 +58,7 @@ type Dependencies = {
   repository?: GcpConnectionRepository;
   authorizationRepository?: GcpAuthorizationRepository;
   log?: GcpConnectLog;
+  callbackAuth?: Partial<IntegrationCallbackDependencies>;
 };
 
 export function gcpConfigFromEnv(env: NodeJS.ProcessEnv = process.env): GcpConnectConfig | null {
@@ -228,6 +233,7 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
       repository: authorizationRepository,
       gateway,
       signState: (authorizationId) => signGcpState(authorizationId, stateSecret),
+      codeChallenge: (authorizationId) => gcpPkceChallenge(authorizationId, stateSecret),
     });
     return c.json({ url: result.url });
   });
@@ -253,6 +259,7 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
           action: "disconnect",
           connectionId: connection.id,
         }),
+      codeChallenge: (authorizationId) => gcpPkceChallenge(authorizationId, stateSecret),
     });
     return c.json({ url: result.url });
   });
@@ -417,10 +424,12 @@ export function mountGcpPublic(app: Hono<{ Variables: Vars }>, input: Dependenci
     const authorization = await authorizationRepository.findById(state.authorizationId);
     if (
       !authorization ||
-      !(await hasProjectManagerAccess({
-        userId: authorization.userId,
+      !(await authorizeIntegrationCallback({
+        headers: c.req.raw.headers,
+        initiatingUserId: authorization.userId,
         preferredOrgId: null,
         projectId: authorization.projectId,
+        dependencies: input.callbackAuth,
       }))
     ) {
       return c.redirect(outcomeUrl("error"), 302);
@@ -429,6 +438,7 @@ export function mountGcpPublic(app: Hono<{ Variables: Vars }>, input: Dependenci
       const completed = await completeGcpAuthorization({
         authorizationId: state.authorizationId,
         code,
+        codeVerifier: gcpPkceVerifier(state.authorizationId, stateSecret),
         repository: authorizationRepository,
         gateway,
       });

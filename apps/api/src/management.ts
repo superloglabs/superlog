@@ -1279,8 +1279,8 @@ async function assertReturnUrlAllowed(orgId: string, returnUrl: string): Promise
   } catch {
     throw new HTTPException(400, { message: "return_url is not a valid URL" });
   }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    throw new HTTPException(400, { message: "return_url must be http or https" });
+  if (parsed.protocol !== "https:") {
+    throw new HTTPException(400, { message: "return_url must be https" });
   }
   if (parsed.username || parsed.password) {
     throw new HTTPException(400, { message: "return_url must not include credentials" });
@@ -1413,6 +1413,7 @@ export function mountOrgKeyManagementAuthed(app: Hono<any>): void {
       scope: "org",
       orgId: ctx.orgId,
       returnUrl: null,
+      userId: ctx.userId,
     });
     if (!result) throw new HTTPException(503, { message: "github app not configured" });
     log.info(

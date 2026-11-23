@@ -11,6 +11,10 @@ import {
 } from "@superlog/db";
 import { and, eq } from "drizzle-orm";
 import type { Context, Hono } from "hono";
+import {
+  type IntegrationCallbackDependencies,
+  integrationCallbackDependencies,
+} from "./integration-install-authorization.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 import { buildAppWebUrl } from "./project-web-route.js";
 import {
@@ -138,10 +142,21 @@ export function mountProjectMcpServersAuthed(
   });
 }
 
-// Callback authentication is the single-use state + PKCE attempt, so this
-// route must be mounted before the normal /api session middleware.
-// biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
-export function mountProjectMcpOAuthPublic(app: Hono<any>): void {
+// The callback is matched to its attempt by the single-use state + PKCE, and
+// the browser finishing it must be signed in: as the user who started the
+// attempt, or for attempts started with a management key, as a manager of the
+// project. It is mounted before the normal /api session middleware so a
+// failure redirects back to the app instead of returning a bare 401.
+export function mountProjectMcpOAuthPublic(
+  // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
+  app: Hono<any>,
+  deps: {
+    oauth?: Pick<typeof oauth, "complete">;
+    callbackAuth?: Partial<IntegrationCallbackDependencies>;
+  } = {},
+): void {
+  const oauthService = deps.oauth ?? oauth;
+  const callbackAuth = integrationCallbackDependencies(deps.callbackAuth);
   app.get("/api/agent-mcp-oauth/callback", async (c) => {
     const state = c.req.query("state");
     const code = c.req.query("code");
@@ -150,7 +165,20 @@ export function mountProjectMcpOAuthPublic(app: Hono<any>): void {
       return c.redirect(buildAppWebUrl(webOrigin, "/settings?section=agent-mcps&mcp_oauth=error"));
     }
     try {
-      const server = await oauth.complete({ state, code });
+      const server = await oauthService.complete({
+        state,
+        code,
+        authorize: async (attempt) => {
+          const userId = await callbackAuth.getAuthenticatedUserId(c.req.raw.headers);
+          if (!userId) return false;
+          if (attempt.initiatingUserId && attempt.initiatingUserId !== userId) return false;
+          return callbackAuth.hasProjectManagerAccess({
+            userId,
+            preferredOrgId: null,
+            projectId: attempt.projectId,
+          });
+        },
+      });
       const target = new URL(buildAppWebUrl(webOrigin, "/settings"));
       target.searchParams.set("section", "agent-mcps");
       target.searchParams.set("projectId", server.projectId);

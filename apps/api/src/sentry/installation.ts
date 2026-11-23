@@ -2,9 +2,12 @@ import crypto from "node:crypto";
 import { type SentryCredential, db, encryptIntegrationSecret, schema } from "@superlog/db";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Hono } from "hono";
+import {
+  type IntegrationCallbackDependencies,
+  authorizeIntegrationCallback,
+} from "../integration-install-authorization.js";
 import { logger } from "../logger.js";
 import { requireProjectManagerContext } from "../org-authorization-http.js";
-import { hasProjectManagerAccess } from "../org-authorization.js";
 import {
   SentryAuthorizationError,
   type SentryAuthorizationRepository,
@@ -46,6 +49,7 @@ export type SentryInstallationDeps = {
     targetProjectId: string;
   }): Promise<number>;
   getActiveCredential(projectId: string): Promise<SentryCredential | null>;
+  callbackAuth?: Partial<IntegrationCallbackDependencies>;
 };
 
 function config() {
@@ -100,10 +104,12 @@ export function mountSentryInstallationPublic(app: Hono<any>, deps: SentryInstal
       return c.json({ error: "invalid callback" }, 400);
     }
     if (
-      !(await hasProjectManagerAccess({
-        userId: callback.state.userId,
+      !(await authorizeIntegrationCallback({
+        headers: c.req.raw.headers,
+        initiatingUserId: callback.state.userId,
         preferredOrgId: callback.state.orgId,
         projectId: callback.state.projectId,
+        dependencies: deps.callbackAuth,
       }))
     ) {
       return c.redirect(
