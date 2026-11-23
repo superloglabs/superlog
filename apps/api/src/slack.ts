@@ -25,13 +25,13 @@ import {
   syncLoopsContactsForOrg,
   unsilenceIncidentIssues,
 } from "@superlog/db";
-import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Hono } from "hono";
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { getAuthenticatedUserId as getDefaultAuthenticatedUserId } from "./authenticated-user.js";
 import { attachFeedbackDetail, recordFeedback } from "./feedback.js";
-import { resolveFeedbackIncidentId } from "./follow-up-offer.js";
+import { feedbackMayReachIncident, resolveFeedbackIncidentId } from "./follow-up-offer.js";
 import { getDeviceFlow, getSkillDeviceForIntegration } from "./gateway.js";
 import { closeAgentPullRequestOnGithub, reopenAgentPullRequestOnGithub } from "./github.js";
 import { runResolvedIncidentSideEffectsForIncident } from "./incidents/resolution-side-effects.js";
@@ -339,10 +339,22 @@ export function mountSlackPublic(
 //     is still blocked on GitHub, making repeated clicks idempotent
 //   - `open_pr:<incident-uuid>` → starts a one-shot PR-enabled implementation
 //     run from a findings-only investigation
-async function handleSlackBlockActions(payload: SlackInteractivityPayload): Promise<void> {
+export async function handleSlackBlockActions(payload: SlackInteractivityPayload): Promise<void> {
   const action = payload.actions?.[0];
   if (!action) return;
   const actionId = action.action_id ?? "";
+
+  // Every action acts on one incident. Only the Slack workspace that incident
+  // belongs to may act on it.
+  const targetIncidentId = await blockActionIncidentId(actionId);
+  if (!targetIncidentId) return;
+  if (!(await incidentBelongsToSlackTeam(targetIncidentId, payload.team?.id))) {
+    log.warn(
+      { team_id: payload.team?.id, incident_id: targetIncidentId, action: actionId.split(":")[0] },
+      "slack action from a workspace the incident does not belong to",
+    );
+    return;
+  }
 
   if (actionId.startsWith("resolve_incident:")) {
     const incidentId = actionId.slice("resolve_incident:".length);
@@ -467,6 +479,76 @@ async function handleSlackBlockActions(payload: SlackInteractivityPayload): Prom
   if (!data.ok) {
     log.warn({ error: data.error, incidentId }, "views.open failed for feedback modal");
   }
+}
+
+const INCIDENT_ACTION_PREFIXES = [
+  "resolve_incident:",
+  "not_an_issue:",
+  "unsilence_resolve:",
+  "merge_pr:",
+  "give_feedback:",
+] as const;
+
+// The incident a block action targets, or null for an unknown action.
+async function blockActionIncidentId(actionId: string): Promise<string | null> {
+  for (const prefix of INCIDENT_ACTION_PREFIXES) {
+    if (actionId.startsWith(prefix)) return actionId.slice(prefix.length) || null;
+  }
+  const direct =
+    parseOpenPrAction(actionId) ??
+    parseRetryInvestigationAction(actionId) ??
+    parseRateIncidentAction(actionId)?.incidentId ??
+    null;
+  if (direct) return direct;
+  if (actionId.startsWith("follow_up_confirm:")) {
+    return feedbackIncidentId(actionId.slice("follow_up_confirm:".length));
+  }
+  for (const prefix of ["resolve_proposal_confirm:", "resolve_proposal_dismiss:"]) {
+    if (!actionId.startsWith(prefix)) continue;
+    const proposal = await db.query.incidentResolutionProposals
+      .findFirst({
+        where: eq(schema.incidentResolutionProposals.id, actionId.slice(prefix.length)),
+        columns: { incidentId: true },
+      })
+      .catch(() => null);
+    return proposal?.incidentId ?? null;
+  }
+  return null;
+}
+
+async function feedbackIncidentId(feedbackId: string): Promise<string | null> {
+  if (!feedbackId) return null;
+  const feedback = await db.query.feedback
+    .findFirst({ where: eq(schema.feedback.id, feedbackId), columns: { kind: true, refId: true } })
+    .catch(() => null);
+  return feedback ? resolveFeedbackIncidentId(feedback) : null;
+}
+
+// An incident belongs to the Slack workspace of the installation that posted
+// its thread, or, for incidents without a pinned installation, to any
+// workspace its project is connected to.
+export async function incidentBelongsToSlackTeam(
+  incidentId: string,
+  teamId: string | undefined,
+): Promise<boolean> {
+  if (!teamId) return false;
+  const incident = await db.query.incidents
+    .findFirst({
+      where: eq(schema.incidents.id, incidentId),
+      columns: { projectId: true, slackInstallationId: true },
+    })
+    .catch(() => null);
+  if (!incident) return false;
+  const installation = await db.query.slackInstallations.findFirst({
+    where: incident.slackInstallationId
+      ? eq(schema.slackInstallations.id, incident.slackInstallationId)
+      : and(
+          eq(schema.slackInstallations.projectId, incident.projectId),
+          eq(schema.slackInstallations.teamId, teamId),
+        ),
+    columns: { teamId: true },
+  });
+  return installation?.teamId === teamId;
 }
 
 // Decode a `rate_incident:<rating>:<incidentId>` action_id from the 👍/👎
@@ -1107,6 +1189,10 @@ async function handleFollowUpConfirm(
     where: eq(schema.incidents.id, incidentId),
   });
   if (!incident) return;
+  if (!(await feedbackMayReachIncident(feedback, incident))) {
+    log.warn({ feedbackId }, "follow_up_confirm feedback author is not an org member");
+    return;
+  }
 
   const result = await requestFollowUpAgentRun(db, {
     incidentId,
@@ -1186,7 +1272,7 @@ async function postSlackThreadReply(opts: {
   }
 }
 
-async function handleSlackViewSubmission(payload: SlackInteractivityPayload): Promise<void> {
+export async function handleSlackViewSubmission(payload: SlackInteractivityPayload): Promise<void> {
   const callbackId = payload.view?.callback_id ?? "";
 
   // Optional detail typed after a 👍/👎 click — the rating row already exists,
@@ -1195,7 +1281,10 @@ async function handleSlackViewSubmission(payload: SlackInteractivityPayload): Pr
   if (callbackId.startsWith("feedback_detail:")) {
     const feedbackId = callbackId.slice("feedback_detail:".length);
     const detail = payload.view?.state?.values?.feedback_body?.value?.value?.trim() ?? "";
-    if (feedbackId && detail) await attachFeedbackDetail(feedbackId, detail);
+    if (!feedbackId || !detail) return;
+    const incidentId = await feedbackIncidentId(feedbackId);
+    if (!incidentId || !(await incidentBelongsToSlackTeam(incidentId, payload.team?.id))) return;
+    await attachFeedbackDetail(feedbackId, detail);
     return;
   }
 
@@ -1204,6 +1293,7 @@ async function handleSlackViewSubmission(payload: SlackInteractivityPayload): Pr
   if (!incidentId) return;
   const body = payload.view?.state?.values?.feedback_body?.value?.value?.trim() ?? "";
   if (!body) return;
+  if (!(await incidentBelongsToSlackTeam(incidentId, payload.team?.id))) return;
 
   const incident = await db.query.incidents.findFirst({
     where: eq(schema.incidents.id, incidentId),
@@ -1525,15 +1615,20 @@ export function mountSlackAuthed(app: Hono<any>): void {
     return c.json({ installed: true, isDefaultChatProject: install.isDefaultChatProject });
   });
 
-  // Mark this project as the workspace's default for Q&A chats (bot mentions
-  // outside any project's routed channel). One default per workspace: setting
-  // it clears the flag on the team's other installations first, matching the
-  // partial unique index.
+  // Mark this project as its org's default for Q&A chats in this workspace
+  // (bot mentions outside any project's routed channel). One default per org
+  // and workspace: setting it clears the flag on the org's other projects
+  // connected to the same workspace. Other orgs' rows are never touched.
   app.put("/api/projects/:projectId/slack-chat-default", async (c) => {
     const projectId = c.req.param("projectId");
     await requireProjectManager(c, projectId);
     const install = await findInstallation(projectId);
     if (!install) return c.json({ error: "slack not installed" }, 400);
+    const project = await db.query.projects.findFirst({
+      where: eq(schema.projects.id, projectId),
+      columns: { orgId: true },
+    });
+    if (!project) return c.json({ error: "project not found" }, 404);
 
     const body = (await c.req.json().catch(() => ({}))) as { enabled?: unknown };
     const enabled = typeof body.enabled === "boolean" ? body.enabled : true;
@@ -1547,6 +1642,13 @@ export function mountSlackAuthed(app: Hono<any>): void {
             and(
               eq(schema.slackInstallations.teamId, install.teamId),
               eq(schema.slackInstallations.isDefaultChatProject, true),
+              inArray(
+                schema.slackInstallations.projectId,
+                tx
+                  .select({ id: schema.projects.id })
+                  .from(schema.projects)
+                  .where(eq(schema.projects.orgId, project.orgId)),
+              ),
             ),
           );
       }
@@ -1878,6 +1980,7 @@ async function handleChatEvent(
       installations.map((i) => ({
         id: i.id,
         projectId: i.projectId,
+        orgId: i.orgId,
         channelId: i.channelId,
         isDefaultChatProject: i.isDefaultChatProject,
         installedAt: i.installedAt,
@@ -1957,19 +2060,26 @@ async function handleChatEvent(
 }
 
 // Every non-revoked installation row for a workspace (one per connected
-// project). Callers pick between them via resolveChatInstallation.
+// project), with the org that owns each project. Callers pick between them
+// via resolveChatInstallation.
 async function listInstallationsForTeam(teamId: string) {
   if (!teamId) return [];
-  const rows = await db.query.slackInstallations.findMany({
-    where: and(
-      eq(schema.slackInstallations.teamId, teamId),
-      isNull(schema.slackInstallations.revokedAt),
-    ),
-    orderBy: desc(
-      sql`coalesce(${schema.slackInstallations.installedAt}, ${schema.slackInstallations.createdAt})`,
-    ),
-  });
-  return rows.map(hydrateSlackInstallation);
+  const rows = await db
+    .select({ installation: schema.slackInstallations, orgId: schema.projects.orgId })
+    .from(schema.slackInstallations)
+    .innerJoin(schema.projects, eq(schema.projects.id, schema.slackInstallations.projectId))
+    .where(
+      and(
+        eq(schema.slackInstallations.teamId, teamId),
+        isNull(schema.slackInstallations.revokedAt),
+      ),
+    )
+    .orderBy(
+      desc(
+        sql`coalesce(${schema.slackInstallations.installedAt}, ${schema.slackInstallations.createdAt})`,
+      ),
+    );
+  return rows.map((row) => ({ ...hydrateSlackInstallation(row.installation), orgId: row.orgId }));
 }
 
 async function resolveUserOrg(
@@ -2201,7 +2311,7 @@ export async function joinSlackChannel(
 // then action_id; for the feedback modal that's
 // `state.values.feedback_body.value.value` (block_id="feedback_body",
 // action_id="value", input type plain_text_input).
-type SlackInteractivityPayload = {
+export type SlackInteractivityPayload = {
   type?: string;
   trigger_id?: string;
   team?: { id?: string };

@@ -26,17 +26,21 @@ after(async () => {
   }
 });
 
-async function seedSlackProject(cutOverAt?: Date, team?: string) {
+async function seedSlackProject(cutOverAt?: Date, team?: string, existingOrgId?: string) {
   const tag = randomBytes(4).toString("hex");
-  const [org] = await db
-    .insert(schema.orgs)
-    .values({ name: `slack-cut-over-${tag}`, slug: `slack-cut-over-${tag}` })
-    .returning();
-  if (!org) throw new Error("seed org failed");
-  orgIds.push(org.id);
+  let orgId = existingOrgId;
+  if (!orgId) {
+    const [org] = await db
+      .insert(schema.orgs)
+      .values({ name: `slack-cut-over-${tag}`, slug: `slack-cut-over-${tag}` })
+      .returning();
+    if (!org) throw new Error("seed org failed");
+    orgIds.push(org.id);
+    orgId = org.id;
+  }
   const [project] = await db
     .insert(schema.projects)
-    .values({ orgId: org.id, name: "Default", slug: "default" })
+    .values({ orgId, name: "Default", slug: `default-${tag}` })
     .returning();
   if (!project) throw new Error("seed project failed");
   const teamId = team ?? `T${tag}`;
@@ -60,14 +64,14 @@ async function seedSlackProject(cutOverAt?: Date, team?: string) {
     .from(schema.slackInstallations)
     .where(eq(schema.slackInstallations.projectId, project.id));
   if (!installation) throw new Error("seed installation failed");
-  return { channelId, installationId: installation.id, projectId: project.id, teamId };
+  return { channelId, installationId: installation.id, projectId: project.id, teamId, orgId };
 }
 
 test("keeps a cut-over project's channel from routing to another project in the team", async () => {
   const slack = mock.method(globalThis, "fetch", async () => Response.json({ ok: true }));
   const team = `T${randomBytes(4).toString("hex")}`;
   const moved = await seedSlackProject(new Date(), team);
-  const active = await seedSlackProject(undefined, team);
+  const active = await seedSlackProject(undefined, team, moved.orgId);
 
   await mention(moved);
 

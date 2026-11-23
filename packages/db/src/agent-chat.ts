@@ -35,6 +35,8 @@ export function stripBotMention(text: string, botUserId: string | null): string 
 export type ChatInstallationCandidate = {
   id: string;
   projectId: string;
+  // The org that owns the project.
+  orgId: string;
   // The project's routed incident channel, if configured.
   channelId: string | null;
   isDefaultChatProject: boolean;
@@ -48,16 +50,21 @@ export type ChatInstallationResolution =
   | { outcome: "none" };
 
 // Pick which project answers a mention when a workspace is connected to
-// several. Callers pass the team's non-revoked installations. Order:
-// the install routed to the mention's channel, else the workspace's only
-// install, else the flagged default-chat project, else ambiguous (the caller
-// should ask the user rather than guess). Ties inside a bucket prefer the
-// flagged default, then token recency (`coalesce(installedAt, createdAt)`,
-// the row most likely to hold the live bot token).
+// several. Callers pass the team's non-revoked installations. Only the org
+// that connected the workspace first answers chats; installs from orgs that
+// connected later are never candidates, so they cannot take over routing.
+// Within that org: the install routed to the mention's channel, else the
+// org's only install, else the flagged default-chat project, else ambiguous
+// (the caller should ask the user rather than guess). Ties inside a bucket
+// prefer the flagged default, then token recency
+// (`coalesce(installedAt, createdAt)`, the row most likely to hold the live
+// bot token).
 export function resolveChatInstallation(
-  installations: ChatInstallationCandidate[],
+  allInstallations: ChatInstallationCandidate[],
   channelId: string,
 ): ChatInstallationResolution {
+  const ownerOrgId = chatOwnerOrgId(allInstallations);
+  const installations = allInstallations.filter((i) => i.orgId === ownerOrgId);
   if (installations.length === 0) return { outcome: "none" };
   if (installations.length === 1) {
     const only = installations[0];
@@ -76,6 +83,22 @@ export function resolveChatInstallation(
   }
 
   return { outcome: "ambiguous" };
+}
+
+// The org whose install of the workspace is oldest. Ties on createdAt fall
+// back to the row id so the choice never depends on query order.
+function chatOwnerOrgId(installations: ChatInstallationCandidate[]): string | null {
+  let earliest: ChatInstallationCandidate | null = null;
+  for (const candidate of installations) {
+    if (
+      !earliest ||
+      candidate.createdAt.getTime() < earliest.createdAt.getTime() ||
+      (candidate.createdAt.getTime() === earliest.createdAt.getTime() && candidate.id < earliest.id)
+    ) {
+      earliest = candidate;
+    }
+  }
+  return earliest?.orgId ?? null;
 }
 
 function preferFlaggedThenRecent(rows: ChatInstallationCandidate[]): ChatInstallationCandidate {

@@ -61,6 +61,7 @@ function install(overrides: Partial<InstallRow> = {}): InstallRow {
   return {
     id: "inst-1",
     projectId: "proj-1",
+    orgId: "org-1",
     channelId: null,
     isDefaultChatProject: false,
     installedAt: new Date("2026-07-01T00:00:00Z"),
@@ -116,6 +117,55 @@ test("several channel matches prefer the flagged one, then token recency", () =>
   });
   const flagged = install({ id: "inst-4", channelId: "C1", isDefaultChatProject: true });
   assert.deepEqual(resolveChatInstallation([older, flagged, newer], "C1"), {
+    outcome: "resolved",
+    installation: flagged,
+  });
+});
+
+test("only the org that connected the workspace first answers chats", () => {
+  const first = install({
+    id: "inst-2",
+    projectId: "proj-2",
+    orgId: "org-first",
+    createdAt: new Date("2026-06-01T00:00:00Z"),
+  });
+  const laterRouted = install({
+    id: "inst-3",
+    projectId: "proj-3",
+    orgId: "org-later",
+    channelId: "C1",
+    isDefaultChatProject: true,
+    createdAt: new Date("2026-06-02T00:00:00Z"),
+    installedAt: new Date("2026-07-10T00:00:00Z"),
+  });
+  for (const channel of ["C1", "C_ELSEWHERE"]) {
+    assert.deepEqual(resolveChatInstallation([laterRouted, first], channel), {
+      outcome: "resolved",
+      installation: first,
+    });
+  }
+});
+
+test("the first org keeps chat routing between its own projects", () => {
+  const routed = install({ id: "inst-2", projectId: "proj-2", orgId: "org-a", channelId: "C1" });
+  const flagged = install({
+    id: "inst-3",
+    projectId: "proj-3",
+    orgId: "org-a",
+    isDefaultChatProject: true,
+  });
+  const later = install({
+    id: "inst-4",
+    projectId: "proj-4",
+    orgId: "org-b",
+    channelId: "C2",
+    createdAt: new Date("2026-06-05T00:00:00Z"),
+  });
+  assert.deepEqual(resolveChatInstallation([later, routed, flagged], "C1"), {
+    outcome: "resolved",
+    installation: routed,
+  });
+  assert.deepEqual(resolveChatInstallation([later, routed, flagged], "C2"), {
     outcome: "resolved",
     installation: flagged,
   });

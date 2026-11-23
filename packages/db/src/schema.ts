@@ -2091,15 +2091,12 @@ export const slackInstallations = pgTable(
     installedAt: timestamp("installed_at", { withTimezone: true }),
     // When a workspace is connected to several Superlog projects, a bot
     // mention outside any project's routed channel is ambiguous. This flags
-    // the one project that answers those; the partial unique index enforces
-    // at most one default per workspace.
+    // the one project that answers those. Each org sets its own flag; setting
+    // it clears the flag on the org's other projects for the same workspace.
     isDefaultChatProject: boolean("is_default_chat_project").notNull().default(false),
   },
   (t) => ({
     projectTeamUniq: uniqueIndex("slack_installations_project_team_idx").on(t.projectId, t.teamId),
-    defaultChatProjectUniq: uniqueIndex("slack_installations_default_chat_idx")
-      .on(t.teamId)
-      .where(sql`is_default_chat_project`),
   }),
 );
 

@@ -442,7 +442,15 @@ mountCloudflarePublic(app);
 mountVercelPublic(app);
 mountRailwayPublic(app);
 mountGcpPublic(app);
-mountFeedbackPublic(app);
+mountFeedbackPublic(app, {
+  rateLimit: authRateLimitRepository,
+  clientIp: (c) =>
+    resolveAuthClientIp({
+      peerIp: getConnInfo(c).remote.address,
+      forwardedFor: c.req.header("x-forwarded-for"),
+      behindTrustedProxy: AUTH_BEHIND_TRUSTED_PROXY,
+    }),
+});
 mountProjectMcpOAuthPublic(app);
 mountProjectMcpRelayPublic(app);
 // Management API (org-key auth, /api/v1/*) registers its own middleware

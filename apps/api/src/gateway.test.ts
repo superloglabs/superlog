@@ -24,12 +24,16 @@ test("legacy LLM gateway routes are unavailable to authenticated CLI sessions", 
   const orgs = db.query.orgs as unknown as {
     findFirst: () => Promise<{ id: string; name: string }>;
   };
+  const orgMembers = db.query.orgMembers as unknown as {
+    findFirst: () => Promise<{ userId: string }>;
+  };
   const database = db as unknown as {
     update: () => { set: () => { where: () => Promise<void> } };
   };
   const previousFindSession = cliSessions.findFirst;
   const previousFindUser = users.findFirst;
   const previousFindOrg = orgs.findFirst;
+  const previousFindMember = orgMembers.findFirst;
   const previousUpdate = database.update;
 
   cliSessions.findFirst = async () => ({
@@ -41,6 +45,7 @@ test("legacy LLM gateway routes are unavailable to authenticated CLI sessions", 
   });
   users.findFirst = async () => ({ id: "user-1", email: "user@example.com" });
   orgs.findFirst = async () => ({ id: "org-1", name: "Test org" });
+  orgMembers.findFirst = async () => ({ userId: "user-1" });
   database.update = () => ({ set: () => ({ where: async () => {} }) });
   process.env.ANTHROPIC_API_KEY = "test-shared-key";
   globalThis.fetch = async () => new Response("unexpected upstream response", { status: 200 });
@@ -63,6 +68,7 @@ test("legacy LLM gateway routes are unavailable to authenticated CLI sessions", 
     cliSessions.findFirst = previousFindSession;
     users.findFirst = previousFindUser;
     orgs.findFirst = previousFindOrg;
+    orgMembers.findFirst = previousFindMember;
     database.update = previousUpdate;
     globalThis.fetch = previousFetch;
     if (previousApiKey === undefined) Reflect.deleteProperty(process.env, "ANTHROPIC_API_KEY");

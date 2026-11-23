@@ -1,7 +1,8 @@
 import { db, schema } from "@superlog/db";
 import { and, eq } from "drizzle-orm";
-import type { Hono } from "hono";
+import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import type { AuthRateLimitRepository } from "./auth-global-rate-limit.js";
 import { auth } from "./auth.js";
 import { UUID_RE, resolveEffectiveReadProjectId } from "./demo.js";
 import { offerFollowUpForFeedback } from "./follow-up-offer.js";
@@ -12,6 +13,14 @@ const log = logger.child({ scope: "feedback" });
 
 const MAX_BODY_LEN = 8_000;
 const FEEDBACK_KINDS = new Set<schema.FeedbackKind>(["incident", "issue", "pr"]);
+const PR_LINK_WINDOW_MS = 10 * 60_000;
+const PR_LINK_MAX_PER_WINDOW = 10;
+
+export type FeedbackPublicDeps = {
+  rateLimit: AuthRateLimitRepository;
+  // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
+  clientIp: (c: Context<any>) => string | undefined;
+};
 
 // Public + authed routes share one mount because the PR-link page must be
 // reachable without a session (external GitHub PR participants).
@@ -26,13 +35,25 @@ const FEEDBACK_KINDS = new Set<schema.FeedbackKind>(["incident", "issue", "pr"])
 // and admin-inbox bookkeeping stay in one place.
 
 // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
-export function mountFeedbackPublic(app: Hono<any>): void {
+export function mountFeedbackPublic(app: Hono<any>, deps?: FeedbackPublicDeps): void {
   // Anonymous PR-link submissions. We accept these without a session because
   // the link is included in PR descriptions on customer repos, and many
-  // commenters won't have Superlog accounts. Rate-limiting is intentionally
-  // out-of-scope for v1 — the form is one click deep, the admin inbox is
-  // staff-only, and we can lock it down if it gets abused.
+  // commenters won't have Superlog accounts. Submissions are limited per
+  // client IP. Feedback from anyone who is not a signed-in member of the PR's
+  // org is recorded for staff only (see feedbackMayReachIncident).
   app.post("/feedback/pr/:owner/:repo/:number", async (c) => {
+    if (deps) {
+      const decision = await deps.rateLimit.consume({
+        key: `feedback:pr-link:${deps.clientIp(c) ?? "no-client-ip"}`,
+        max: PR_LINK_MAX_PER_WINDOW,
+        windowMs: PR_LINK_WINDOW_MS,
+        nowEpochMs: Date.now(),
+      });
+      if (!decision.allowed) {
+        const retryAfter = String(decision.retryAfterSeconds ?? PR_LINK_WINDOW_MS / 1000);
+        return c.json({ error: "too many requests" }, 429, { "retry-after": retryAfter });
+      }
+    }
     const owner = c.req.param("owner");
     const repo = c.req.param("repo");
     const number = Number(c.req.param("number"));

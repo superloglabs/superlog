@@ -212,3 +212,31 @@ test("anonymous submissions cannot inject Slack markup into the team notificatio
     } else process.env.FEEDBACK_SLACK_WEBHOOK = previousWebhook;
   }
 });
+
+test("PR-link feedback is limited per client IP", async () => {
+  const keys: string[] = [];
+  let allowed = true;
+  const app = new Hono();
+  mountFeedbackPublic(app, {
+    rateLimit: {
+      consume: async (input) => {
+        keys.push(input.key);
+        return { allowed, retryAfterSeconds: allowed ? null : 42 };
+      },
+    },
+    clientIp: () => "client-a",
+  });
+  const submit = () =>
+    app.request(`/feedback/pr/acme/widgets-${randomUUID()}/1`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ body: "looks good" }),
+    });
+
+  assert.equal((await submit()).status, 200);
+  allowed = false;
+  const limited = await submit();
+  assert.equal(limited.status, 429);
+  assert.equal(limited.headers.get("retry-after"), "42");
+  assert.deepEqual(keys, ["feedback:pr-link:client-a", "feedback:pr-link:client-a"]);
+});
