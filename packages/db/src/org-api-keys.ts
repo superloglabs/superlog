@@ -1,7 +1,8 @@
-import { eq, isNull, and } from "drizzle-orm";
-import { db } from "./client.js";
+import { and, eq, isNull } from "drizzle-orm";
+import { type DB, db } from "./client.js";
 import { generateOrgManagementKey, hashApiKey } from "./keys.js";
 import { orgApiKeys } from "./schema.js";
+import { userHasActiveBan } from "./user-credentials.js";
 
 export type MintedOrgApiKey = {
   id: string;
@@ -39,18 +40,23 @@ export async function mintOrgApiKey(args: {
   };
 }
 
-// Looks up an active org api key by plaintext. Returns null if revoked or
-// unknown. Updates last_used_at as a best-effort side effect (fire-and-forget).
-export async function resolveOrgApiKey(plaintext: string): Promise<{
+// Looks up an active org api key by plaintext. Returns null if revoked,
+// unknown, or created by a user who is currently banned. Updates last_used_at
+// as a best-effort side effect (fire-and-forget).
+export async function resolveOrgApiKey(
+  plaintext: string,
+  database: DB = db,
+): Promise<{
   id: string;
   orgId: string;
 } | null> {
   const hash = hashApiKey(plaintext);
-  const row = await db.query.orgApiKeys.findFirst({
+  const row = await database.query.orgApiKeys.findFirst({
     where: and(eq(orgApiKeys.keyHash, hash), isNull(orgApiKeys.revokedAt)),
   });
   if (!row) return null;
-  void db
+  if (row.createdByUserId && (await userHasActiveBan(database, row.createdByUserId))) return null;
+  void database
     .update(orgApiKeys)
     .set({ lastUsedAt: new Date() })
     .where(eq(orgApiKeys.id, row.id))

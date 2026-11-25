@@ -14,6 +14,11 @@ import { eq } from "drizzle-orm";
 import { favoriteProjectToSeed, pickActiveOrgId as pickActiveOrgIdRule } from "./active-context.js";
 import { AUTH_CLIENT_IP_HEADER } from "./auth-client-ip.js";
 import { authCookieOptions, legacySharedCookieDomain } from "./auth-cookies.js";
+import {
+  revokeCredentialsAfterPasswordChange,
+  revokeCredentialsIfBanned,
+  revokeCredentialsOnPasswordReset,
+} from "./auth-credential-revocation.js";
 import { AUTH_RATE_LIMIT } from "./auth-rate-limit.js";
 import { autumnBillingAccess } from "./autumn-billing-access.js";
 import {
@@ -182,6 +187,11 @@ export const auth = betterAuth({
       const body = passwordResetEmailBody(url);
       await sendEmail({ to: user.email, subject: "Reset your Superlog password", ...body });
     },
+    // A reset ends every session and revokes the user's bearer credentials.
+    // Password changes and bans do the same through `hooks.after` and
+    // `databaseHooks.user.update.after` below.
+    revokeSessionsOnPasswordReset: true,
+    onPasswordReset: revokeCredentialsOnPasswordReset,
   },
   emailVerification: {
     sendOnSignUp: true,
@@ -234,6 +244,10 @@ export const auth = betterAuth({
     admin(),
     ...autumnPlugins,
   ],
+  hooks: {
+    // /change-password and /admin/set-user-password, after they succeed.
+    after: revokeCredentialsAfterPasswordChange,
+  },
   databaseHooks: {
     account: {
       create: {
@@ -244,6 +258,12 @@ export const auth = betterAuth({
       },
     },
     user: {
+      update: {
+        // Bans arrive as user updates (/admin/ban-user, /admin/update-user).
+        after: async (user) => {
+          await revokeCredentialsIfBanned(user);
+        },
+      },
       create: {
         // Covers every way a users row is created: email, social sign-in and
         // invitations alike.

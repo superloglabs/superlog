@@ -6,6 +6,7 @@ import {
   hashToken,
   schema,
   syncLoopsContactForUserProject,
+  userHasActiveBan,
 } from "@superlog/db";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Hono } from "hono";
@@ -320,6 +321,9 @@ async function handleCodeGrant(c: Context, cfg: McpConfig, form: Record<string, 
   if (!verifyPkce(codeVerifier, row.codeChallenge, row.codeChallengeMethod)) {
     return oauthError(c, 400, "invalid_grant", "PKCE verification failed");
   }
+  if (await userHasActiveBan(db, row.userId)) {
+    return oauthError(c, 400, "invalid_grant", "user is banned");
+  }
 
   const [claimed] = await db
     .update(schema.mcpOauthCodes)
@@ -373,6 +377,9 @@ async function handleRefreshGrant(c: Context, cfg: McpConfig, form: Record<strin
   if (row.clientId !== clientId) return oauthError(c, 400, "invalid_grant", "client_id mismatch");
   if (row.refreshExpiresAt && row.refreshExpiresAt.getTime() < Date.now()) {
     return oauthError(c, 400, "invalid_grant", "refresh token expired");
+  }
+  if (await userHasActiveBan(db, row.userId)) {
+    return oauthError(c, 400, "invalid_grant", "user is banned");
   }
 
   const resolvedScope = resolveRefreshMcpOauthScope(requestedScope, row.scope);

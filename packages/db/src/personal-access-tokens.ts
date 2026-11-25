@@ -1,7 +1,8 @@
 import { eq } from "drizzle-orm";
-import { db } from "./client.js";
+import { type DB, db } from "./client.js";
 import { generatePersonalAccessToken, hashToken } from "./keys.js";
 import { type PersonalAccessToken, personalAccessTokens } from "./schema.js";
+import { userHasActiveBan } from "./user-credentials.js";
 
 export type PatExpiryChoice = "never" | "30d" | "90d";
 
@@ -74,8 +75,9 @@ export async function mintPersonalAccessToken(input: {
  */
 export async function resolvePersonalAccessToken(
   plaintext: string,
+  database: DB = db,
 ): Promise<PersonalAccessToken | { reason: string }> {
-  const row = await db.query.personalAccessTokens.findFirst({
+  const row = await database.query.personalAccessTokens.findFirst({
     where: eq(personalAccessTokens.tokenHash, hashToken(plaintext)),
   });
   if (!row) return { reason: "token not found" };
@@ -83,6 +85,7 @@ export async function resolvePersonalAccessToken(
   if (row.expiresAt && row.expiresAt.getTime() < Date.now()) {
     return { reason: "token expired" };
   }
+  if (await userHasActiveBan(database, row.userId)) return { reason: "user banned" };
   return row;
 }
 
