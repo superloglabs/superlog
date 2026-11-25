@@ -4,7 +4,7 @@ import {
   createDrizzleProjectMcpServerRepository,
 } from "@superlog/db";
 import type { Env, Hono } from "hono";
-import { strictProjectMcpFetch } from "./project-mcp-http.js";
+import { streamingProjectMcpFetch } from "./project-mcp-http.js";
 
 const REQUEST_HEADERS = [
   "accept",
@@ -26,7 +26,7 @@ export function mountProjectMcpRelayPublic<E extends Env>(
 ): void {
   const deps: RelayDependencies = {
     repository: createDrizzleProjectMcpServerRepository(),
-    fetch: strictProjectMcpFetch,
+    fetch: streamingProjectMcpFetch,
     ...overrides,
   };
 

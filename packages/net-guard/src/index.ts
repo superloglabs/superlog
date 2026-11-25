@@ -281,19 +281,79 @@ function guardedDispatcher(): Agent {
   return dispatcher;
 }
 
-export type WebhookFetchInit = {
+// Replies from a destination we don't control are read with a size limit.
+// undici decompresses gzip/deflate/br bodies on its own, so a small compressed
+// reply can expand to gigabytes; the limit counts decoded bytes.
+export const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+
+export class ResponseTooLargeError extends Error {
+  constructor(readonly maxBytes: number) {
+    super(`response exceeded ${maxBytes} bytes`);
+    this.name = "ResponseTooLargeError";
+  }
+}
+
+type ResponseLimit = {
+  // Decoded body bytes to read before the body fails with
+  // ResponseTooLargeError. Defaults to DEFAULT_MAX_RESPONSE_BYTES. Pass
+  // Infinity only when the body is streamed onward with backpressure and never
+  // buffered.
+  maxResponseBytes?: number;
+};
+
+export type WebhookFetchInit = ResponseLimit & {
   method?: string;
   headers?: Record<string, string>;
   body?: string;
   signal?: AbortSignal;
 };
 
-export type GuardedPublicFetchInit = {
+export type GuardedPublicFetchInit = ResponseLimit & {
   method?: string;
   headers?: HeadersInit;
   body?: string | ArrayBuffer | Uint8Array;
   signal?: AbortSignal;
 };
+
+// Wraps the body so that reading past maxBytes errors the stream and cancels
+// the upstream read, whichever way the caller consumes it (.json(), .text(),
+// a reader, or a proxied stream).
+export function limitResponseBody(response: Response, maxBytes: number): Response {
+  if (!response.body || maxBytes === Number.POSITIVE_INFINITY) return response;
+  let received = 0;
+  const limited = response.body.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        received += chunk.byteLength;
+        if (received > maxBytes) {
+          controller.error(new ResponseTooLargeError(maxBytes));
+          return;
+        }
+        controller.enqueue(chunk);
+      },
+    }),
+  );
+  return new Response(limited, {
+    headers: response.headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
+async function sendLimited(
+  destination: string,
+  init: ResponseLimit & Record<string, unknown>,
+  extra: Record<string, unknown>,
+): Promise<Response> {
+  const { maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES, ...requestInit } = init;
+  const options = {
+    ...requestInit,
+    ...extra,
+    redirect: "manual",
+  } as unknown as NonNullable<Parameters<typeof undiciFetch>[1]>;
+  const response = (await undiciFetch(destination, options)) as unknown as Response;
+  return limitResponseBody(response, maxResponseBytes);
+}
 
 // Perform an outbound request through the IP-pinning dispatcher. Callers may
 // apply stricter protocol rules, but cannot bypass the connect-time DNS check.
@@ -303,13 +363,7 @@ export async function guardedPublicFetch(
 ): Promise<Response> {
   const destination = url.toString();
   await assertPublicUrl(destination, init.signal, false);
-  const options = {
-    ...init,
-    redirect: "manual",
-    dispatcher: guardedDispatcher() as Dispatcher,
-  } as unknown as NonNullable<Parameters<typeof undiciFetch>[1]>;
-  const response = await undiciFetch(destination, options);
-  return response as unknown as Response;
+  return sendLimited(destination, init, { dispatcher: guardedDispatcher() as Dispatcher });
 }
 
 // Deliver a webhook request through the SSRF-guarded, IP-pinned dispatcher.
@@ -321,10 +375,5 @@ export async function guardedPublicFetch(
 export async function webhookFetch(url: string, init: WebhookFetchInit): Promise<Response> {
   if (!allowPrivateDestinations()) return guardedPublicFetch(url, init);
   await assertPublicWebhookUrl(url, init.signal);
-  const options = {
-    ...init,
-    redirect: "manual",
-  } as unknown as NonNullable<Parameters<typeof undiciFetch>[1]>;
-  const response = await undiciFetch(url, options);
-  return response as unknown as Response;
+  return sendLimited(url, init, {});
 }
