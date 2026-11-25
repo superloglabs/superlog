@@ -319,6 +319,10 @@ export type GuardedPublicFetchInit = ResponseLimit & {
 // the upstream read, whichever way the caller consumes it (.json(), .text(),
 // a reader, or a proxied stream).
 export function limitResponseBody(response: Response, maxBytes: number): Response {
+  // NaN or a negative limit would compare false and turn the guard off.
+  if (!(maxBytes > 0)) {
+    throw new RangeError("maxResponseBytes must be a positive number or Infinity");
+  }
   if (!response.body || maxBytes === Number.POSITIVE_INFINITY) return response;
   let received = 0;
   const limited = response.body.pipeThrough(
@@ -333,11 +337,14 @@ export function limitResponseBody(response: Response, maxBytes: number): Respons
       },
     }),
   );
-  return new Response(limited, {
+  const bounded = new Response(limited, {
     headers: response.headers,
     status: response.status,
     statusText: response.statusText,
   });
+  // A constructed Response has an empty url; keep the fetched one.
+  Object.defineProperty(bounded, "url", { value: response.url });
+  return bounded;
 }
 
 async function sendLimited(

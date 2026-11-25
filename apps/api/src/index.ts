@@ -160,7 +160,7 @@ import {
   VALID_MANUAL_MERGE_METHODS,
   mergeAgentPullRequestAndResolveIncident,
 } from "./pr-merge-service.js";
-import { strictProjectMcpFetch } from "./project-mcp-http.js";
+import { streamingProjectMcpFetch, strictProjectMcpFetch } from "./project-mcp-http.js";
 import { mountProjectMcpRelayPublic } from "./project-mcp-relay.js";
 import {
   mountProjectMcpOAuthPublic,
@@ -432,6 +432,7 @@ mountSentryPublic(app, {
 mountSentryMcpRelayPublic(app, {
   repository: sentryCredentialRepository,
   fetch: strictProjectMcpFetch,
+  relayFetch: streamingProjectMcpFetch,
   now: () => new Date(),
   clientId: process.env.SENTRY_CLIENT_ID,
   clientSecret: process.env.SENTRY_CLIENT_SECRET,
