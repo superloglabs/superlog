@@ -168,6 +168,7 @@ import {
   mountProjectMcpServersManagement,
 } from "./project-mcp-servers.js";
 import { mountProjectRouteContext } from "./project-route-context.js";
+import { publicEndpointLimits, publicEndpointRateLimit } from "./public-endpoint-rate-limit.js";
 import { mountRailwayAuthed, mountRailwayPublic } from "./railway.js";
 import { mountRenderAuthed } from "./render.js";
 import {
@@ -316,6 +317,22 @@ app.get("/api/auth-providers", (c) =>
 );
 
 app.get("/api/system/capabilities", (c) => c.json(buildSystemCapabilities()));
+
+// Endpoints anyone can call that store a row or hold memory get a per-address
+// limit. Registered before their handlers, which are mounted below.
+const publicClientIp = (c: Context) =>
+  resolveAuthClientIp({
+    peerIp: getConnInfo(c).remote.address,
+    forwardedFor: c.req.header("x-forwarded-for"),
+    behindTrustedProxy: AUTH_BEHIND_TRUSTED_PROXY,
+  });
+for (const [path, limit] of [
+  ["/oauth/register", publicEndpointLimits.oauthRegister],
+  ["/oauth/device", publicEndpointLimits.oauthDevice],
+  ["/api/signup-intents", publicEndpointLimits.signupIntents],
+] as const) {
+  app.post(path, publicEndpointRateLimit(authRateLimitRepository, limit, publicClientIp));
+}
 
 app.post("/api/signup-intents", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as {

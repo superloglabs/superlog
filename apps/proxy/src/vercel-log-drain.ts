@@ -1,3 +1,5 @@
+import { assertDecodableSize, assertJsonContainers, parseBoundedJson } from "./bounded-json.js";
+
 type OtlpAnyValue = {
   stringValue?: string;
   intValue?: string;
@@ -60,17 +62,19 @@ const LEVEL_TO_SEVERITY: Record<string, { text: string; number: number }> = {
 };
 
 export function parseVercelLogDrainBody(body: Buffer, contentType: string): VercelLogRecord[] {
+  assertDecodableSize(body);
   const text = body.toString("utf8").trim();
   if (!text) return [];
   const lower = contentType.toLowerCase();
   if (lower.includes("ndjson") || lower.includes("x-ndjson")) {
+    assertJsonContainers(text);
     return text
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean)
       .map((line) => coerceRecord(JSON.parse(line)));
   }
-  const parsed = JSON.parse(text);
+  const parsed = parseBoundedJson(text);
   if (Array.isArray(parsed)) return parsed.map(coerceRecord);
   return [coerceRecord(parsed)];
 }

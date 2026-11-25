@@ -101,6 +101,9 @@ export function mountOauthMetadata(app: Hono, cfg: McpConfig) {
   );
 }
 
+const MAX_REDIRECT_URIS = 10;
+const MAX_REDIRECT_URI_LENGTH = 2048;
+
 export function mountOauthEndpoints(app: Hono, cfg: McpConfig) {
   app.post("/oauth/register", async (c) => {
     const body = (await c.req.json().catch(() => null)) as {
@@ -116,7 +119,24 @@ export function mountOauthEndpoints(app: Hono, cfg: McpConfig) {
     if (redirectUris.length === 0) {
       return oauthError(c, 400, "invalid_redirect_uri", "redirect_uris is required");
     }
+    // Anyone can register a client, so each one stays small.
+    if (redirectUris.length > MAX_REDIRECT_URIS) {
+      return oauthError(
+        c,
+        400,
+        "invalid_redirect_uri",
+        `at most ${MAX_REDIRECT_URIS} redirect_uris`,
+      );
+    }
     for (const uri of redirectUris) {
+      if (uri.length > MAX_REDIRECT_URI_LENGTH) {
+        return oauthError(
+          c,
+          400,
+          "invalid_redirect_uri",
+          `redirect_uri longer than ${MAX_REDIRECT_URI_LENGTH} characters`,
+        );
+      }
       if (!isValidRedirectUri(uri)) {
         return oauthError(c, 400, "invalid_redirect_uri", `invalid redirect_uri: ${uri}`);
       }

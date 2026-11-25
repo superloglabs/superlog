@@ -53,3 +53,45 @@ export function isDeviceExpired(device: Device, now: number): boolean {
 export function isDeviceIntegrationExpired(device: Device, now: number): boolean {
   return now > (device.integrationExpiresAt ?? device.expiresAt);
 }
+
+// Devices waiting for approval, kept in this process. Anyone can start a
+// device flow, so the store drops devices once their last deadline passes and
+// refuses new ones while it is full of live devices.
+export const MAX_DEVICES = 10_000;
+
+export type DeviceStore = ReturnType<typeof createDeviceStore>;
+
+export function createDeviceStore({ maxDevices = MAX_DEVICES }: { maxDevices?: number } = {}) {
+  const byDeviceCode = new Map<string, Device>();
+  const byUserCode = new Map<string, Device>();
+  let nextSweepAt = 0;
+
+  function sweep(now: number): void {
+    for (const [deviceCode, device] of byDeviceCode) {
+      if (!isDeviceIntegrationExpired(device, now)) continue;
+      byDeviceCode.delete(deviceCode);
+      if (byUserCode.get(device.userCode) === device) byUserCode.delete(device.userCode);
+    }
+    nextSweepAt = now + 60_000;
+  }
+
+  return {
+    // False when the store is full of devices that have not expired.
+    add(device: Device, now: number): boolean {
+      if (now >= nextSweepAt || byDeviceCode.size >= maxDevices) sweep(now);
+      if (byDeviceCode.size >= maxDevices) return false;
+      byDeviceCode.set(device.deviceCode, device);
+      byUserCode.set(device.userCode, device);
+      return true;
+    },
+    byDeviceCode(deviceCode: string): Device | undefined {
+      return byDeviceCode.get(deviceCode);
+    },
+    byUserCode(userCode: string): Device | undefined {
+      return byUserCode.get(userCode);
+    },
+    size(): number {
+      return byDeviceCode.size;
+    },
+  };
+}

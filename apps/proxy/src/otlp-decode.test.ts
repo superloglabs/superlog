@@ -5,6 +5,7 @@ import { gzipSync } from "node:zlib";
 import protobuf from "protobufjs";
 
 import { PayloadTooLargeError } from "./body-capture.js";
+import { DecodeLimitError } from "./bounded-json.js";
 import type { OtelLogRow } from "./otlp-clickhouse.js";
 import { type DecodedRows, decodeOtlpMetricsPayload, decodeOtlpToRows } from "./otlp-decode.js";
 
@@ -138,5 +139,40 @@ test("decodeOtlpToRows returns null for an undecodable content type", async () =
       body: Buffer.from("x"),
     }),
     null,
+  );
+});
+
+// A small body of many empty objects parses into far more memory than its size.
+test("decoding refuses a JSON body with too many objects", async () => {
+  const body = gzipSync(Buffer.from(`[${"{},".repeat(1_000_000)}{}]`));
+  await assert.rejects(
+    decodeOtlpMetricsPayload({ body, contentEncoding: "gzip", contentType: "application/json" }),
+    DecodeLimitError,
+  );
+  await assert.rejects(
+    decodeOtlpToRows({
+      body,
+      contentEncoding: "gzip",
+      contentType: "application/json",
+      path: "/v1/logs",
+      projectId: "p",
+    }),
+    DecodeLimitError,
+  );
+});
+
+test("decoding JSON bodies is limited to 16 MiB after decompression", async () => {
+  const body = gzipSync(
+    Buffer.from(JSON.stringify({ resourceLogs: [], pad: "x".repeat(17 * 1024 * 1024) })),
+  );
+  await assert.rejects(
+    decodeOtlpToRows({
+      body,
+      contentEncoding: "gzip",
+      contentType: "application/json",
+      path: "/v1/logs",
+      projectId: "p",
+    }),
+    DecodeLimitError,
   );
 });
