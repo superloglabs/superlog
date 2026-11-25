@@ -1,5 +1,5 @@
 // OpenTelemetry browser instrumentation. Loaded as the first import in main.tsx.
-import { SpanStatusCode, trace, type Attributes } from "@opentelemetry/api";
+import { type Attributes, SpanStatusCode, trace } from "@opentelemetry/api";
 import { ZoneContextManager } from "@opentelemetry/context-zone";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { registerInstrumentations } from "@opentelemetry/instrumentation";
@@ -9,9 +9,15 @@ import { UserInteractionInstrumentation } from "@opentelemetry/instrumentation-u
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { BatchSpanProcessor, WebTracerProvider } from "@opentelemetry/sdk-trace-web";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
+import { createRelaySpanExporter } from "./relay-span-exporter";
 
 const env = (import.meta.env ?? {}) as Record<string, string | undefined>;
 
+// Preferred: post spans to the API's telemetry relay, which authenticates the
+// signed-in user and adds the intake credentials server-side. The direct
+// endpoint + headers path remains for setups that want it, but anything in
+// VITE_OTEL_EXPORTER_OTLP_HEADERS ships in the public bundle.
+const relayUrl = env.VITE_OTEL_TRACES_RELAY_URL;
 const endpoint = env.VITE_OTEL_EXPORTER_OTLP_ENDPOINT;
 const headersRaw = env.VITE_OTEL_EXPORTER_OTLP_HEADERS;
 const serviceName = env.VITE_OTEL_SERVICE_NAME ?? "@superlog/web";
@@ -39,17 +45,19 @@ function parseHeaders(raw: string | undefined): Record<string, string> {
 
 let browserTracerProvider: WebTracerProvider | undefined;
 
-if (!endpoint) {
+if (!relayUrl && !endpoint) {
   // eslint-disable-next-line no-console
-  console.warn("[otel] VITE_OTEL_EXPORTER_OTLP_ENDPOINT not set; tracing disabled");
+  console.warn(
+    "[otel] neither VITE_OTEL_TRACES_RELAY_URL nor VITE_OTEL_EXPORTER_OTLP_ENDPOINT set; tracing disabled",
+  );
 } else {
   try {
-    const headers = parseHeaders(headersRaw);
-
-    const exporter = new OTLPTraceExporter({
-      url: `${endpoint.replace(/\/$/, "")}/v1/traces`,
-      headers,
-    });
+    const exporter = relayUrl
+      ? createRelaySpanExporter({ url: relayUrl })
+      : new OTLPTraceExporter({
+          url: `${(endpoint ?? "").replace(/\/$/, "")}/v1/traces`,
+          headers: parseHeaders(headersRaw),
+        });
 
     browserTracerProvider = new WebTracerProvider({
       resource: resourceFromAttributes({

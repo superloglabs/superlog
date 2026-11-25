@@ -52,6 +52,13 @@ test("isAuditableMutation excludes read POSTs but keeps real writes", () => {
   );
 });
 
+test("isAuditableMutation skips the browser telemetry relay", () => {
+  assert.equal(
+    isAuditableMutation({ method: "POST", path: "/api/browser-telemetry/v1/traces" }),
+    false,
+  );
+});
+
 test("buildActorLogFields carries human-readable user + org identity", () => {
   assert.deepEqual(
     buildActorLogFields({

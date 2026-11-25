@@ -72,6 +72,10 @@ import {
   parseLinearDefaultTeamId,
 } from "./automation-settings-update.js";
 import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
+import {
+  browserTelemetryRelayConfigFromEnv,
+  mountBrowserTelemetryRelay,
+} from "./browser-telemetry.js";
 import { createApiClickHouseClient } from "./clickhouse-client.js";
 import { mountCloudConnectionsAuthed } from "./cloud-connections.js";
 import { mountCloudflareAuthed, mountCloudflarePublic } from "./cloudflare.js";
@@ -500,6 +504,7 @@ app.use("/api/*", async (c, next) => {
 // blocked. See apps/api/src/demo.ts.
 app.use("/api/projects/:projectId/*", demoOverlay());
 
+mountBrowserTelemetryRelay(app, { config: browserTelemetryRelayConfigFromEnv(process.env) });
 mountMcpAuthed(app);
 mountPersonalAccessTokens(app);
 mountProjectRouteContext(app);

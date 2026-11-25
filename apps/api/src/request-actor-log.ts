@@ -43,7 +43,12 @@ export function isReadOnlyPostPath(path: string): boolean {
 }
 
 /** A request worth auditing: a genuine state change, not a POST-for-read query. */
+// High-volume writes that are not user actions: browser span batches relayed
+// to the telemetry intake.
+const UNAUDITED_POST_PATHS = new Set(["/api/browser-telemetry/v1/traces"]);
+
 export function isAuditableMutation(args: { method: string; path: string }): boolean {
+  if (UNAUDITED_POST_PATHS.has(args.path)) return false;
   return isMutatingMethod(args.method) && !isReadOnlyPostPath(args.path);
 }
 
