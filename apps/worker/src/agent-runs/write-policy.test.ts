@@ -69,6 +69,18 @@ test("dependency manifests and lockfiles are protected at any depth", () => {
     "src/App/App.csproj",
     "packages.lock.json",
     ".gitmodules",
+    "MODULE.bazel",
+    "WORKSPACE.bazel",
+    "gradle/libs.versions.toml",
+    "gradle/wrapper/gradle-wrapper.properties",
+    "environment.yml",
+    "conanfile.txt",
+    "vcpkg.json",
+    "flake.lock",
+    "Project.toml",
+    "stack.yaml",
+    "app.cabal",
+    "renv.lock",
   ]) {
     assert.equal(protectedPathCategory(path), "dependencies", path);
   }

@@ -88,6 +88,34 @@ const DEPENDENCY_FILE_NAMES = new Set([
   "podfile.lock",
   "pubspec.yaml",
   "pubspec.lock",
+  "module.bazel",
+  "module.bazel.lock",
+  "workspace",
+  "workspace.bazel",
+  "workspace.bzlmod",
+  "libs.versions.toml",
+  "gradle-wrapper.properties",
+  "environment.yml",
+  "environment.yaml",
+  "conda-lock.yml",
+  "conanfile.txt",
+  "conanfile.py",
+  "vcpkg.json",
+  "flake.nix",
+  "flake.lock",
+  "project.toml",
+  "manifest.toml",
+  "stack.yaml",
+  "stack.yaml.lock",
+  "cabal.project",
+  "cabal.project.freeze",
+  "renv.lock",
+  "rebar.config",
+  "rebar.lock",
+  "shard.yml",
+  "shard.lock",
+  "brewfile",
+  "brewfile.lock.json",
 ]);
 
 const AGENT_INSTRUCTION_FILE_NAMES = new Set([
@@ -126,6 +154,7 @@ export function protectedPathCategory(filePath: string): ProtectedPathCategory |
   if (directories.at(-1) === "requirements" && /\.(txt|in)$/.test(name)) return "dependencies";
   if (/\.(csproj|fsproj|vbproj)$/.test(name)) return "dependencies";
   if (/\.gemspec$/.test(name)) return "dependencies";
+  if (/\.cabal$/.test(name)) return "dependencies";
 
   return null;
 }
