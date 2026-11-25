@@ -23,7 +23,7 @@
     "test": "tsx --test src/*.test.ts"
   },
   "dependencies": {
-    "better-auth": "~1.6.31",
+    "better-auth": "~1.7.28",
     "drizzle-orm": "^0.45.2",
     "nanoid": "^5.0.9",
     "postgres": "^3.4.5",
