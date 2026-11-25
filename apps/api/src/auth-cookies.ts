@@ -68,7 +68,17 @@ export function legacySharedCookieDomain(apiOrigin: string, webOrigin: string): 
 export type LegacyCookieMigrationOptions = {
   legacyDomain: string | undefined;
   sessionMaxAgeSeconds: number;
+  // Legacy cookies are copied to the host-only names only before this time.
+  // Any sibling host can still set a parent-domain cookie, so after the move
+  // they are only expired; otherwise a planted cookie could become a session.
+  copyUntil: Date | null;
 };
+
+export function legacyCookieCopyDeadline(value: string | undefined): Date | null {
+  if (!value) return null;
+  const deadline = new Date(value);
+  return Number.isNaN(deadline.getTime()) ? null : deadline;
+}
 
 type CookiePair = { name: string; value: string };
 
@@ -92,8 +102,10 @@ const ATTRIBUTES = "Path=/; HttpOnly; Secure; SameSite=Lax";
 export function migrateLegacyAuthCookies(
   cookieHeader: string | null | undefined,
   options: LegacyCookieMigrationOptions,
+  now: Date = new Date(),
 ): { cookieHeader: string; setCookies: string[] } | null {
   if (!cookieHeader) return null;
+  const copying = options.copyUntil !== null && now < options.copyUntil;
   const pairs = parseCookiePairs(cookieHeader);
   if (!pairs.some((p) => p.name.startsWith(LEGACY_PREFIX))) return null;
 
@@ -111,7 +123,7 @@ export function migrateLegacyAuthCookies(
       continue;
     }
     const target = `${HOST_PREFIX}${pair.name.slice(LEGACY_PREFIX.length)}`;
-    if (!current.has(target)) {
+    if (copying && !current.has(target)) {
       current.add(target);
       kept.push(`${target}=${pair.value}`);
       const maxAge =

@@ -5,12 +5,14 @@ import {
   AUTH_COOKIE_PREFIX,
   authCookieOptions,
   legacyAuthCookieMigration,
+  legacyCookieCopyDeadline,
   legacySharedCookieDomain,
   migrateLegacyAuthCookies,
 } from "./auth-cookies.js";
 
 const LEGACY = "__Secure-better-auth";
 const CURRENT = `__Host-${AUTH_COOKIE_PREFIX}`;
+const OPEN = new Date("2100-01-01T00:00:00Z");
 
 test("https deployments use host-only __Host- auth cookies", () => {
   const options = authCookieOptions("https://api.example.com");
@@ -45,7 +47,7 @@ test("the legacy shared cookie domain is the parent domain of web and api", () =
 test("legacy cookies are copied to host-only names and expired on the parent domain", () => {
   const result = migrateLegacyAuthCookies(
     `theme=dark; ${LEGACY}.session_token=tok.sig%3D; ${LEGACY}.state=st`,
-    { legacyDomain: ".example.com", sessionMaxAgeSeconds: 604800 },
+    { legacyDomain: ".example.com", sessionMaxAgeSeconds: 604800, copyUntil: OPEN },
   );
   assert.deepEqual(result, {
     cookieHeader: `theme=dark; ${CURRENT}.session_token=tok.sig%3D; ${CURRENT}.state=st`,
@@ -61,7 +63,7 @@ test("legacy cookies are copied to host-only names and expired on the parent dom
 test("a session-only legacy login stays session-only after the copy", () => {
   const result = migrateLegacyAuthCookies(
     `${LEGACY}.session_token=tok; ${LEGACY}.dont_remember=true`,
-    { legacyDomain: ".example.com", sessionMaxAgeSeconds: 604800 },
+    { legacyDomain: ".example.com", sessionMaxAgeSeconds: 604800, copyUntil: OPEN },
   );
   assert.ok(result);
   assert.ok(
@@ -74,7 +76,7 @@ test("a session-only legacy login stays session-only after the copy", () => {
 test("a current cookie wins over a legacy one and the legacy one is only expired", () => {
   const result = migrateLegacyAuthCookies(
     `${LEGACY}.session_token=old; ${CURRENT}.session_token=new`,
-    { legacyDomain: ".example.com", sessionMaxAgeSeconds: 604800 },
+    { legacyDomain: ".example.com", sessionMaxAgeSeconds: 604800, copyUntil: OPEN },
   );
   assert.deepEqual(result, {
     cookieHeader: `${CURRENT}.session_token=new`,
@@ -84,16 +86,61 @@ test("a current cookie wins over a legacy one and the legacy one is only expired
   });
 });
 
+test("after the copy deadline legacy cookies are only expired, never copied", () => {
+  // A sibling host can still plant a parent-domain cookie. Once the move is
+  // over, such a cookie must not become a host-only session.
+  const result = migrateLegacyAuthCookies(
+    `theme=dark; ${LEGACY}.session_token=planted`,
+    {
+      legacyDomain: ".example.com",
+      sessionMaxAgeSeconds: 604800,
+      copyUntil: new Date("2026-01-01T00:00:00Z"),
+    },
+    new Date("2026-01-02T00:00:00Z"),
+  );
+  assert.deepEqual(result, {
+    cookieHeader: "theme=dark",
+    setCookies: [
+      `${LEGACY}.session_token=; Max-Age=0; Domain=.example.com; Path=/; HttpOnly; Secure; SameSite=Lax`,
+    ],
+  });
+});
+
+test("without a configured deadline legacy cookies are never copied", () => {
+  const result = migrateLegacyAuthCookies(`${LEGACY}.session_token=tok`, {
+    legacyDomain: ".example.com",
+    sessionMaxAgeSeconds: 604800,
+    copyUntil: null,
+  });
+  assert.equal(result?.cookieHeader, "");
+  assert.equal(result?.setCookies.length, 1);
+});
+
+test("the copy deadline comes from an ISO timestamp", () => {
+  assert.equal(
+    legacyCookieCopyDeadline("2026-12-07T00:00:00Z")?.toISOString(),
+    "2026-12-07T00:00:00.000Z",
+  );
+  assert.equal(legacyCookieCopyDeadline(undefined), null);
+  assert.equal(legacyCookieCopyDeadline(""), null);
+  assert.equal(legacyCookieCopyDeadline("next week"), null);
+});
+
 test("requests without legacy cookies are left alone", () => {
   assert.equal(
     migrateLegacyAuthCookies(`${CURRENT}.session_token=new; theme=dark`, {
       legacyDomain: ".example.com",
       sessionMaxAgeSeconds: 604800,
+      copyUntil: OPEN,
     }),
     null,
   );
   assert.equal(
-    migrateLegacyAuthCookies(undefined, { legacyDomain: ".example.com", sessionMaxAgeSeconds: 1 }),
+    migrateLegacyAuthCookies(undefined, {
+      legacyDomain: ".example.com",
+      sessionMaxAgeSeconds: 1,
+      copyUntil: OPEN,
+    }),
     null,
   );
 });
@@ -102,7 +149,11 @@ function migrationApp(seen: { cookie?: string | null }, setOnResponse?: string) 
   const app = new Hono();
   app.use(
     "*",
-    legacyAuthCookieMigration({ legacyDomain: ".example.com", sessionMaxAgeSeconds: 604800 }),
+    legacyAuthCookieMigration({
+      legacyDomain: ".example.com",
+      sessionMaxAgeSeconds: 604800,
+      copyUntil: OPEN,
+    }),
   );
   app.all("*", (c) => {
     seen.cookie = c.req.raw.headers.get("cookie");
@@ -204,7 +255,11 @@ test("a session from a legacy parent-domain cookie still authenticates after the
   const app = new Hono();
   app.use(
     "*",
-    legacyAuthCookieMigration({ legacyDomain: ".example.com", sessionMaxAgeSeconds: 604800 }),
+    legacyAuthCookieMigration({
+      legacyDomain: ".example.com",
+      sessionMaxAgeSeconds: 604800,
+      copyUntil: OPEN,
+    }),
   );
   app.get("/api/me", async (c) => {
     const session = await currentAuth.api.getSession({ headers: c.req.raw.headers });

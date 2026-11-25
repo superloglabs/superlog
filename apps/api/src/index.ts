@@ -68,6 +68,7 @@ import { createDrizzleAuthRateLimitRepository } from "./auth-rate-limit-reposito
 import {
   API_ORIGIN,
   AUTH_COOKIES_HOST_ONLY,
+  LEGACY_AUTH_COOKIE_COPY_UNTIL,
   LEGACY_AUTH_COOKIE_DOMAIN,
   SESSION_MAX_AGE_SECONDS,
   auth,
@@ -259,6 +260,7 @@ if (AUTH_COOKIES_HOST_ONLY) {
     legacyAuthCookieMigration({
       legacyDomain: LEGACY_AUTH_COOKIE_DOMAIN,
       sessionMaxAgeSeconds: SESSION_MAX_AGE_SECONDS,
+      copyUntil: LEGACY_AUTH_COOKIE_COPY_UNTIL,
     }),
   );
 }
