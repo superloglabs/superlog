@@ -60,11 +60,18 @@ import {
   requestWithAuthClientIp,
   resolveAuthClientIp,
 } from "./auth-client-ip.js";
+import { legacyAuthCookieMigration } from "./auth-cookies.js";
 import { enforceGlobalAuthRateLimit } from "./auth-global-rate-limit.js";
 import { startAuthRateLimitCleanup } from "./auth-rate-limit-cleanup.js";
 import { recordAuthRateLimited } from "./auth-rate-limit-metrics.js";
 import { createDrizzleAuthRateLimitRepository } from "./auth-rate-limit-repository.js";
-import { auth } from "./auth.js";
+import {
+  API_ORIGIN,
+  AUTH_COOKIES_HOST_ONLY,
+  LEGACY_AUTH_COOKIE_DOMAIN,
+  SESSION_MAX_AGE_SECONDS,
+  auth,
+} from "./auth.js";
 import {
   InvalidLinearDefaultTeamError,
   buildAutomationSettingsConflictUpdate,
@@ -75,6 +82,7 @@ import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
 import { createApiClickHouseClient } from "./clickhouse-client.js";
 import { mountCloudConnectionsAuthed } from "./cloud-connections.js";
 import { mountCloudflareAuthed, mountCloudflarePublic } from "./cloudflare.js";
+import { cookieWriteOriginGuard } from "./csrf-origin.js";
 import { mountDashboards } from "./dashboards.js";
 import {
   demoOverlay,
@@ -243,6 +251,19 @@ logger.info(
 const incidentLifecycle = createIncidentLifecycle(db);
 const sourceMapObjectStore = sourceMapObjectStoreFromEnv(process.env);
 
+// Moves auth cookies from the old parent-domain scope to host-only names
+// before anything reads the session. See auth-cookies.ts.
+if (AUTH_COOKIES_HOST_ONLY) {
+  app.use(
+    "*",
+    legacyAuthCookieMigration({
+      legacyDomain: LEGACY_AUTH_COOKIE_DOMAIN,
+      sessionMaxAgeSeconds: SESSION_MAX_AGE_SECONDS,
+    }),
+  );
+}
+// Cookie-authenticated writes must come from the web app or the API itself.
+app.use("*", cookieWriteOriginGuard([...WEB_CORS_ORIGINS, new URL(API_ORIGIN).origin]));
 mountApiRequestSecurity(app, WEB_CORS_ORIGINS);
 app.use("/mcp", requestBodyLimit(8 * 1024 * 1024));
 app.use("/oauth/*", requestBodyLimit(64 * 1024));
