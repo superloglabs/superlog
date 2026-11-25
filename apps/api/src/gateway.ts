@@ -5,6 +5,7 @@ import {
   generateApiKey,
   generateCliSession,
   hashCliSession,
+  isBanActive,
   listAccessibleGithubInstallsForProject,
   schema,
   syncLoopsContactForUserProject,
@@ -349,6 +350,7 @@ export function mountGateway(app: Hono<any>, ch: ClickHouseClient): void {
       where: eq(schema.orgs.id, session.orgId),
     });
     if (!user || !org) return c.json({ error: "session references missing account" }, 401);
+    if (isBanActive(user)) return c.json({ error: "invalid token" }, 401);
     // The token was minted for an org member. Stop honoring it once the user
     // leaves or is removed from that org.
     const membership = await db.query.orgMembers.findFirst({

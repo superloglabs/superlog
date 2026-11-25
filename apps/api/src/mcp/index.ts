@@ -8,6 +8,7 @@ import {
   resolvePersonalAccessToken,
   schema,
   touchPersonalAccessToken,
+  userHasActiveBan,
 } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import type { Hono } from "hono";
@@ -121,6 +122,7 @@ async function resolveToken(
   if (!row) return { reason: "token not found" };
   if (row.revokedAt) return { reason: "token revoked" };
   if (row.accessExpiresAt.getTime() < Date.now()) return { reason: "token expired" };
+  if (await userHasActiveBan(db, row.userId)) return { reason: "user banned" };
   // Compare the stored resource leniently: normalize trailing slashes and
   // accept the API origin as an alias for the MCP endpoint. Older tokens
   // issued before canonicalization might have non-canonical values stored.

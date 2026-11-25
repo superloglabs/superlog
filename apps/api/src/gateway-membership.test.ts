@@ -58,3 +58,42 @@ test("a CLI session stops working once its user leaves the org", async () => {
   const afterRemoval = await me();
   assert.equal(afterRemoval.status, 401);
 });
+
+test("a CLI session stops working while its user is banned", async () => {
+  const tag = `gateway-ban-${randomUUID()}`;
+  const [org] = await db.insert(schema.orgs).values({ name: "Acme", slug: tag }).returning();
+  if (!org) throw new Error("failed to seed org");
+  orgIds.push(org.id);
+  const [user] = await db
+    .insert(schema.users)
+    .values({ email: `${tag}@example.com` })
+    .returning();
+  if (!user) throw new Error("failed to seed user");
+  userIds.push(user.id);
+  await db.insert(schema.orgMembers).values({ orgId: org.id, userId: user.id, role: "member" });
+
+  const token = `superlog_cli_${randomUUID()}`;
+  await db.insert(schema.cliSessions).values({
+    userId: user.id,
+    orgId: org.id,
+    tokenPrefix: token.slice(0, 16),
+    tokenHash: hashCliSession(token),
+    expiresAt: new Date(Date.now() + 60_000),
+  });
+
+  const app = new Hono();
+  mountGateway(app, {} as ClickHouseClient);
+  const me = () => app.request("/v1/me", { headers: { authorization: `Bearer ${token}` } });
+
+  assert.equal((await me()).status, 200);
+
+  await db.update(schema.users).set({ banned: true }).where(eq(schema.users.id, user.id));
+  assert.equal((await me()).status, 401);
+
+  // An expired ban no longer blocks the session.
+  await db
+    .update(schema.users)
+    .set({ banExpires: new Date(Date.now() - 60_000) })
+    .where(eq(schema.users.id, user.id));
+  assert.equal((await me()).status, 200);
+});

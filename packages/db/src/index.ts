@@ -97,6 +97,12 @@ export {
   type MintedOrgApiKey,
 } from "./org-api-keys.js";
 export {
+  isBanActive,
+  revokeUserCredentials,
+  type UserCredentialRevocation,
+  userHasActiveBan,
+} from "./user-credentials.js";
+export {
   listAccessibleGithubInstallsForProject,
   type AccessibleGithubInstall,
 } from "./github-access.js";
