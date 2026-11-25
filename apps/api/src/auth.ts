@@ -13,6 +13,7 @@ import { admin, organization } from "better-auth/plugins";
 import { eq } from "drizzle-orm";
 import { favoriteProjectToSeed, pickActiveOrgId as pickActiveOrgIdRule } from "./active-context.js";
 import { AUTH_CLIENT_IP_HEADER } from "./auth-client-ip.js";
+import { authCookieOptions, legacySharedCookieDomain } from "./auth-cookies.js";
 import { AUTH_RATE_LIMIT } from "./auth-rate-limit.js";
 import { autumnBillingAccess } from "./autumn-billing-access.js";
 import {
@@ -40,36 +41,13 @@ import { configuredWebOrigins } from "./web-origins.js";
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
 const WEB_ORIGINS = configuredWebOrigins();
-const API_ORIGIN = process.env.BETTER_AUTH_URL ?? "http://localhost:4100";
+export const API_ORIGIN = process.env.BETTER_AUTH_URL ?? "http://localhost:4100";
 
-// Derive the parent domain that web and api share so the OAuth state cookie
-// is scoped to `.<eTLD+1>` instead of pinned to the api host. For prod that's
-// `.superlog.sh`; for localhost / .superlog.localhost it's `undefined`
-// because browsers won't honour Domain= on a TLD or localhost.
-function sharedCookieDomain(): string | undefined {
-  try {
-    const apiHost = new URL(API_ORIGIN).hostname;
-    const webHost = new URL(WEB_ORIGIN).hostname;
-    if (apiHost === webHost) return undefined; // same host, no cross-sub needed
-    if (apiHost === "localhost" || webHost === "localhost") return undefined;
-    if (apiHost.endsWith(".localhost") || webHost.endsWith(".localhost")) return undefined;
-    // Trim to the longest common dotted suffix shared by both hosts. For
-    // api.superlog.sh / superlog.sh that yields "superlog.sh".
-    const a = apiHost.split(".");
-    const b = webHost.split(".");
-    const parts: string[] = [];
-    while (a.length && b.length && a[a.length - 1] === b[b.length - 1]) {
-      parts.unshift(a.pop() as string);
-      b.pop();
-    }
-    if (parts.length < 2) return undefined; // needs at least eTLD+1
-    return `.${parts.join(".")}`;
-  } catch {
-    return undefined;
-  }
-}
-
-const COOKIE_DOMAIN = sharedCookieDomain();
+// Auth cookies are host-only `__Host-` cookies on the API host. See
+// auth-cookies.ts for the scope and the move away from parent-domain cookies.
+export const LEGACY_AUTH_COOKIE_DOMAIN = legacySharedCookieDomain(API_ORIGIN, WEB_ORIGIN);
+const AUTH_COOKIE_OPTIONS = authCookieOptions(API_ORIGIN);
+export const AUTH_COOKIES_HOST_ONLY = "cookiePrefix" in AUTH_COOKIE_OPTIONS;
 
 // Autumn billing plugin. Maps each org (a Better Auth "organization") to an
 // Autumn customer, auto-created on first sign-in, so billing is per-org. Only
@@ -187,21 +165,10 @@ export const auth = betterAuth({
     database: {
       generateId: () => crypto.randomUUID(),
     },
-    // Web and API often live on different subdomains of the same parent
-    // domain (e.g. `superlog.sh` + `api.superlog.sh`). The OAuth state
-    // cookie has to round-trip from BA's `/api/auth/sign-in/social` response
-    // through the provider and back to `/api/auth/callback/<provider>`; if
-    // the cookie is pinned to the API host instead of the parent domain it
-    // can fail to ride along on some browsers and BA returns
-    // `State mismatch: verification not found`. When the hosts share an
-    // eTLD+1, scope to the parent. localhost / *.localhost are skipped
-    // because browsers reject Domain= on those.
-    ...(COOKIE_DOMAIN
-      ? {
-          crossSubDomainCookies: { enabled: true, domain: COOKIE_DOMAIN },
-          defaultCookieAttributes: { sameSite: "lax" as const, secure: true },
-        }
-      : {}),
+    // Host-only `__Host-` cookies on the API host. The web app's
+    // credentialed fetches and the OAuth callback both land on the API host,
+    // so no other subdomain needs them.
+    ...AUTH_COOKIE_OPTIONS,
   },
   rateLimit: AUTH_RATE_LIMIT,
   emailAndPassword: {
