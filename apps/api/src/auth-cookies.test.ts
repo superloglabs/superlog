@@ -123,7 +123,7 @@ test("the copy deadline comes from an ISO timestamp", () => {
   );
   assert.equal(legacyCookieCopyDeadline(undefined), null);
   assert.equal(legacyCookieCopyDeadline(""), null);
-  assert.equal(legacyCookieCopyDeadline("next week"), null);
+  assert.throws(() => legacyCookieCopyDeadline("next week"), /AUTH_LEGACY_COOKIE_COPY_UNTIL/);
 });
 
 test("requests without legacy cookies are left alone", () => {

@@ -77,7 +77,11 @@ export type LegacyCookieMigrationOptions = {
 export function legacyCookieCopyDeadline(value: string | undefined): Date | null {
   if (!value) return null;
   const deadline = new Date(value);
-  return Number.isNaN(deadline.getTime()) ? null : deadline;
+  // A typo would otherwise silently sign out everyone on old cookies.
+  if (Number.isNaN(deadline.getTime())) {
+    throw new Error(`AUTH_LEGACY_COOKIE_COPY_UNTIL is not a valid timestamp: ${value}`);
+  }
+  return deadline;
 }
 
 type CookiePair = { name: string; value: string };
