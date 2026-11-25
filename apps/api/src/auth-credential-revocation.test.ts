@@ -214,3 +214,28 @@ test("an admin profile update that does not ban revokes nothing", async () => {
   assert.deepEqual(await sessionTokens(user.id), [userSession.token]);
   assert.equal(await patRevoked(user.id), false);
 });
+
+// Bans are sometimes written straight to the users table, which skips the
+// ban hook. The session must stop working anyway.
+test("a session stops working once the user is banned outside Better Auth", async () => {
+  const user = await seedUser("sql-ban");
+  const userSession = await signIn(user.email);
+  assert.equal((await auth.api.getSession({ headers: userSession.headers }))?.user.id, user.id);
+
+  await db.update(schema.users).set({ banned: true }).where(eq(schema.users.id, user.id));
+
+  assert.equal(await auth.api.getSession({ headers: userSession.headers }), null);
+  assert.deepEqual(await sessionTokens(user.id), []);
+});
+
+test("a session keeps working once the ban has expired", async () => {
+  const user = await seedUser("expired-ban");
+  const userSession = await signIn(user.email);
+
+  await db
+    .update(schema.users)
+    .set({ banned: true, banExpires: new Date(Date.now() - 60_000) })
+    .where(eq(schema.users.id, user.id));
+
+  assert.equal((await auth.api.getSession({ headers: userSession.headers }))?.user.id, user.id);
+});

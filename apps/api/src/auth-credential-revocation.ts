@@ -91,8 +91,37 @@ export function passwordChangeTarget(input: {
   return null;
 }
 
-/** `hooks.after`: runs after every Better Auth endpoint, acts only on password changes. */
+/**
+ * The user behind a session Better Auth is about to return, when they are
+ * banned. Covers bans written straight to the users table, which skip the
+ * ban hook above.
+ */
+export function bannedSessionUserId(returned: unknown): string | null {
+  if (!returned || typeof returned !== "object" || !("user" in returned)) return null;
+  const user = (returned as { user?: { id?: unknown; banned?: unknown; banExpires?: unknown } })
+    .user;
+  if (!user || typeof user.id !== "string") return null;
+  const ban = {
+    banned: user.banned === true,
+    banExpires:
+      user.banExpires instanceof Date || typeof user.banExpires === "string"
+        ? user.banExpires
+        : null,
+  };
+  return isBanActive(ban) ? user.id : null;
+}
+
+/**
+ * `hooks.after`: runs after every Better Auth endpoint. A session of a banned
+ * user is refused and ended; a finished password change revokes credentials.
+ */
 export const revokeCredentialsAfterPasswordChange = createAuthMiddleware(async (ctx) => {
+  if (ctx.path === "/get-session") {
+    const bannedUserId = bannedSessionUserId(ctx.context.returned);
+    if (!bannedUserId) return;
+    await revoke("ban", bannedUserId);
+    return ctx.json(null);
+  }
   const current = ctx.context.session;
   const target = passwordChangeTarget({
     path: ctx.path,
