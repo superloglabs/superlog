@@ -5,6 +5,7 @@ import {
   assertPublicWebhookUrl,
   guardedPublicFetch,
   isBlockedAddress,
+  limitResponseBody,
 } from "./index.js";
 
 describe("isBlockedAddress — IPv4", () => {
@@ -163,5 +164,19 @@ describe("guardedPublicFetch", () => {
       () => guardedPublicFetch("https://127.0.0.1/mcp", { method: "POST" }),
       WebhookDestinationError,
     );
+  });
+});
+
+describe("limitResponseBody", () => {
+  it("rejects a limit that is not a positive number", () => {
+    for (const limit of [Number.NaN, -1, 0, Number.NEGATIVE_INFINITY]) {
+      assert.throws(() => limitResponseBody(new Response("ok"), limit), RangeError);
+    }
+  });
+
+  it("keeps the response URL", () => {
+    const upstream = new Response("ok");
+    Object.defineProperty(upstream, "url", { value: "https://mcp.example/path" });
+    assert.equal(limitResponseBody(upstream, 1024).url, "https://mcp.example/path");
   });
 });

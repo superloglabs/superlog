@@ -36,3 +36,30 @@ test("project MCP egress stays fail-closed when private webhook delivery is enab
     process.env.WEBHOOK_ALLOW_PRIVATE_DESTINATIONS = previous ?? "";
   }
 });
+
+test("project MCP requests read replies with the egress size limit", async () => {
+  const limits: Array<number | undefined> = [];
+  const safeFetch = createProjectMcpFetch(async (_url, init) => {
+    limits.push(init?.maxResponseBytes);
+    return new Response(null, { status: 204 });
+  });
+
+  await safeFetch("https://mcp.example/path", { method: "POST" });
+
+  assert.deepEqual(limits, [undefined]);
+});
+
+test("the relay fetch streams replies without a total size limit", async () => {
+  const limits: Array<number | undefined> = [];
+  const relayFetch = createProjectMcpFetch(
+    async (_url, init) => {
+      limits.push(init?.maxResponseBytes);
+      return new Response(null, { status: 204 });
+    },
+    { streaming: true },
+  );
+
+  await relayFetch("https://mcp.example/path", { method: "GET" });
+
+  assert.deepEqual(limits, [Number.POSITIVE_INFINITY]);
+});

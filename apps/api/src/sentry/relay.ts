@@ -38,7 +38,11 @@ export type SentryMcpCredentialRepository = {
 
 type RelayDependencies = {
   repository: SentryMcpCredentialRepository;
+  // Token refreshes, whose replies are buffered.
   fetch: typeof fetch;
+  // The relayed MCP request, whose reply is streamed to the client. Defaults
+  // to `fetch`.
+  relayFetch?: typeof fetch;
   now: () => Date;
   clientId: string | undefined;
   clientSecret: string | undefined;
@@ -86,7 +90,7 @@ export function mountSentryMcpRelayPublic<E extends Env>(
       if (value) headers.set(name, value);
     }
     headers.set("authorization", `Sentry-Bearer ${credential.accessToken}`);
-    const upstream = await deps.fetch(upstreamUrl, {
+    const upstream = await (deps.relayFetch ?? deps.fetch)(upstreamUrl, {
       method: c.req.method,
       headers,
       body: c.req.method === "GET" ? undefined : await c.req.arrayBuffer(),

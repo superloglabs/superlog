@@ -229,3 +229,58 @@ test("parallel MCP requests rotate an expiring Sentry App grant only once", asyn
   assert.equal(refreshCalls, 1);
   assert.deepEqual(reauth, []);
 });
+
+test("streams the relayed request through relayFetch and refreshes tokens through fetch", async () => {
+  const current = {
+    id: "sentry-install-1",
+    sentryInstallationId: "sentry-external-installation-1",
+    organizationSlug: "acme",
+    projectSlug: "storefront",
+    accessToken: "expired-access",
+    refreshToken: "refresh-token",
+    relayToken: "relay-token",
+    expiresAt: new Date("2026-07-21T12:00:30.000Z"),
+  };
+  const buffered: string[] = [];
+  const streamed: string[] = [];
+  const app = new Hono();
+  mountSentryMcpRelayPublic(app, {
+    repository: {
+      getActive: async () => current,
+      refreshIfExpiring: async (_id, _refreshAt, issueToken) => ({
+        ...current,
+        ...(await issueToken(current)),
+      }),
+      markNeedsReauth: async () => assert.fail("refresh must succeed"),
+    },
+    now: () => new Date("2026-07-21T12:00:00.000Z"),
+    fetch: async (input) => {
+      buffered.push(new URL(String(input)).host);
+      return Response.json({
+        token: "fresh-access",
+        refreshToken: "fresh-refresh",
+        expiresAt: "2026-07-21T20:00:00.000Z",
+      });
+    },
+    relayFetch: async (input) => {
+      streamed.push(new URL(String(input)).host);
+      return new Response("event: message\ndata: {}\n\n", {
+        headers: { "content-type": "text/event-stream" },
+      });
+    },
+    clientId: "client-1",
+    clientSecret: "secret-1",
+  });
+
+  const response = await app.request("/api/sentry-mcp-relay/project-1", {
+    method: "GET",
+    headers: { authorization: "Bearer relay-token", accept: "text/event-stream" },
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "text/event-stream");
+  assert.equal(await response.text(), "event: message\ndata: {}\n\n");
+  assert.deepEqual(streamed, ["mcp.sentry.dev"]);
+  assert.equal(buffered.length, 1);
+  assert.notEqual(buffered[0], "mcp.sentry.dev");
+});

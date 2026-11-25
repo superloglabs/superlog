@@ -2,7 +2,14 @@ import { type GuardedPublicFetchInit, guardedPublicFetch } from "@superlog/net-g
 
 type GuardedEgress = (url: string | URL, init?: GuardedPublicFetchInit) => Promise<Response>;
 
-export function createProjectMcpFetch(egress: GuardedEgress = guardedPublicFetch): typeof fetch {
+// Replies are read with the egress size limit, because the MCP SDK and the
+// OAuth flow buffer them. `streaming` lifts the limit for the relay, which
+// passes the upstream body to its client with backpressure and never buffers
+// it, and whose server-sent event streams can stay open for a long time.
+export function createProjectMcpFetch(
+  egress: GuardedEgress = guardedPublicFetch,
+  options: { streaming?: boolean } = {},
+): typeof fetch {
   return (async (input: Parameters<typeof fetch>[0], init: RequestInit = {}) => {
     if (input instanceof Request) {
       throw new Error("project MCP fetch requires an explicit destination URL");
@@ -15,11 +22,15 @@ export function createProjectMcpFetch(egress: GuardedEgress = guardedPublicFetch
       headers,
       body: normalizeBody(init.body),
       signal: init.signal ?? undefined,
+      ...(options.streaming ? { maxResponseBytes: Number.POSITIVE_INFINITY } : {}),
     });
   }) as typeof fetch;
 }
 
 export const strictProjectMcpFetch = createProjectMcpFetch();
+export const streamingProjectMcpFetch = createProjectMcpFetch(guardedPublicFetch, {
+  streaming: true,
+});
 
 function assertProjectMcpHttpsUrl(url: URL): void {
   if (url.protocol !== "https:") throw new Error("MCP destination must use HTTPS");
