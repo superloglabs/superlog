@@ -235,12 +235,17 @@ test("gives up when the workspace sends no headers in time", async () => {
 });
 
 async function seedToken(
-  input: { cutOverAt?: Date | null; scope?: string; workspaceUrl?: string } = {},
+  input: {
+    cutOverAt?: Date | null;
+    scope?: string;
+    workspaceUrl?: string;
+    emailVerified?: boolean;
+  } = {},
 ) {
   const tag = `mcp-forward-${Date.now()}-${randomBytes(4).toString("hex")}`;
   const [user] = await db
     .insert(schema.users)
-    .values({ email: `${tag}@example.com` })
+    .values({ email: `${tag}@example.com`, emailVerified: input.emailVerified ?? true })
     .returning();
   if (!user) throw new Error("seed user failed");
   userIds.push(user.id);
@@ -277,7 +282,7 @@ async function seedToken(
       cutOverAt: input.cutOverAt,
     });
   }
-  return { email: user.email, projectId: project.id, token };
+  return { email: user.email, orgId: org.id, projectId: project.id, token, userId: user.id };
 }
 
 function mcpApp() {
@@ -397,5 +402,26 @@ test("still rejects an unknown token before looking for a cutover", async () => 
   const response = await initialize(mcpApp(), "mcp_unknown");
 
   assert.equal(response.status, 401);
+  assert.equal(fetch.mock.callCount(), 0);
+});
+
+test("refuses to forward for a user the workspace should not trust", async () => {
+  process.env.LEGACY_MCP_FORWARD_TOKEN = "forward-secret";
+  const fetch = stubWorkspace();
+  const app = mcpApp();
+
+  // The email was never proven, so it must not name a workspace member.
+  const unverified = await seedToken({ cutOverAt: new Date(), emailVerified: false });
+  // A banned user keeps no access through an old token.
+  const banned = await seedToken({ cutOverAt: new Date() });
+  await db.update(schema.users).set({ banned: true }).where(eq(schema.users.id, banned.userId));
+  // The token's owner has left the project's organization.
+  const departed = await seedToken({ cutOverAt: new Date() });
+  await db.delete(schema.orgMembers).where(eq(schema.orgMembers.userId, departed.userId));
+
+  for (const seeded of [unverified, banned, departed]) {
+    const response = await initialize(app, seeded.token);
+    assert.equal(response.status, 403);
+  }
   assert.equal(fetch.mock.callCount(), 0);
 });

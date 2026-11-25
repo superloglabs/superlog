@@ -4,6 +4,7 @@ import {
   normalizeSignupIntentKeyHash,
   normalizeSignupIntentKeyPrefix,
   normalizeSignupIntentReturnTo,
+  signupIntentClaimableBy,
 } from "./signup-intents.js";
 
 test("signup intent key prefix accepts generated public ingest key prefixes", () => {
@@ -54,4 +55,18 @@ test("signup intent returnTo drops anything that could leave the machine", () =>
   ]) {
     assert.equal(normalizeSignupIntentReturnTo(value), null);
   }
+});
+
+test("only an account created after the signup intent can claim it", () => {
+  const intent = { createdAt: new Date("2026-11-25T10:00:00Z") };
+  // The account the intent's signup link produced.
+  assert.equal(
+    signupIntentClaimableBy(intent, { createdAt: new Date("2026-11-25T10:03:00Z") }),
+    true,
+  );
+  // An existing customer who was sent someone else's link.
+  assert.equal(
+    signupIntentClaimableBy(intent, { createdAt: new Date("2026-11-24T09:00:00Z") }),
+    false,
+  );
 });

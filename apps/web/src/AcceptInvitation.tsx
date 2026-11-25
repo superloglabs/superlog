@@ -19,7 +19,7 @@ type InviteDetails = {
 type LoadState =
   | { kind: "loading" }
   | { kind: "ready"; invite: InviteDetails }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string; needsVerification?: boolean };
 
 export function AcceptInvitation() {
   const [params] = useSearchParams();
@@ -135,6 +135,8 @@ function AcceptInvitationInner({
         setState({
           kind: "error",
           message: res.error.message ?? "Invitation not found or expired.",
+          // Invitations are only shown to accounts that confirmed their address.
+          needsVerification: res.error.code?.startsWith("EMAIL_VERIFICATION_REQUIRED") ?? false,
         });
         return;
       }
@@ -174,6 +176,7 @@ function AcceptInvitationInner({
       <CenteredShell>
         <Wordmark />
         <p className="mt-6 text-[13px] text-danger">{state.message}</p>
+        {state.needsVerification && <VerifyEmailButton email={userEmail} />}
         <Link to="/" className="mt-4 text-[12px] text-muted underline">
           Back to Superlog
         </Link>
@@ -246,5 +249,38 @@ function AcceptInvitationInner({
         </div>
       </div>
     </CenteredShell>
+  );
+}
+
+function VerifyEmailButton({ email }: { email: string }) {
+  const [status, setStatus] = useState<"idle" | "sending" | "sent" | "failed">("idle");
+  if (status === "sent") {
+    return (
+      <p className="mt-4 text-[13px] text-muted">
+        Check {email} for a confirmation link, then open this invitation again.
+      </p>
+    );
+  }
+  return (
+    <div className="mt-4 flex flex-col items-center gap-2">
+      <Btn
+        variant="primary"
+        size="md"
+        disabled={status === "sending"}
+        onClick={async () => {
+          setStatus("sending");
+          const res = await authClient.sendVerificationEmail({
+            email,
+            callbackURL: window.location.href,
+          });
+          setStatus(res.error ? "failed" : "sent");
+        }}
+      >
+        Email me a confirmation link
+      </Btn>
+      {status === "failed" && (
+        <p className="text-[12px] text-danger">Could not send the email. Try again later.</p>
+      )}
+    </div>
   );
 }

@@ -34,7 +34,7 @@
     "@anthropic-ai/sdk": "^0.91.1",
     "@biomejs/biome": "^1.9.4",
     "@grpc/grpc-js": "^1.14.4",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/exporter-trace-otlp-grpc": "^0.220.0",
     "@opentelemetry/exporter-trace-otlp-proto": "^0.220.0",
@@ -48,12 +48,13 @@
     "tsx": "^4.19.2",
     "turbo": "^2.9.14",
     "typescript": "^5.7.2",
-    "zod": "^4.4.3"
+    "zod": "^4.6.6"
   },
   "pnpm": {
     "overrides": {
       "@grpc/proto-loader>protobufjs": "7.6.5",
-      "@modelcontextprotocol/sdk>hono": "4.12.30",
+      "@modelcontextprotocol/sdk>hono": "4.13.22",
+      "@modelcontextprotocol/sdk>@hono/node-server": "1.19.19",
       "@opentelemetry/otlp-transformer>protobufjs": "8.7.1",
       "@opentelemetry/core@<2.8.0": "2.9.0",
       "@esbuild-kit/core-utils>esbuild": "0.25.0",

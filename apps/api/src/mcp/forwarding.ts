@@ -1,5 +1,5 @@
 import { db, schema } from "@superlog/db";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { logger } from "../logger.js";
 import { hasMcpWriteAccess } from "./scope-authorization.js";
 
@@ -158,10 +158,44 @@ export async function forwardToWorkspace(
     return forwardError(503, "This project has moved, and forwarding is not configured.");
   }
   const user = await db.query.users.findFirst({
-    columns: { email: true },
+    columns: { email: true, emailVerified: true, banned: true },
     where: eq(schema.users.id, token.userId),
   });
   if (!user) return forwardError(503, "The token's user was not found.");
+  // The workspace acts as whoever owns the email sent below, so only send an
+  // email this product verified, for a user who is not banned and is still a
+  // member of the project's organization.
+  const [membership] = await db
+    .select({ userId: schema.orgMembers.userId })
+    .from(schema.projects)
+    .innerJoin(
+      schema.orgMembers,
+      and(
+        eq(schema.orgMembers.orgId, schema.projects.orgId),
+        eq(schema.orgMembers.userId, token.userId),
+      ),
+    )
+    .where(eq(schema.projects.id, token.projectId))
+    .limit(1);
+  if (!user.emailVerified || user.banned || !membership) {
+    log.warn(
+      {
+        projectId: token.projectId,
+        tokenId: token.tokenId,
+        emailVerified: user.emailVerified,
+        banned: user.banned,
+        member: Boolean(membership),
+      },
+      "mcp forwarding refused for this user",
+    );
+    return new Response(
+      JSON.stringify({
+        error: "forwarding_refused",
+        error_description: "Sign in to the project's new workspace directly.",
+      }),
+      { status: 403, headers: { "content-type": "application/json" } },
+    );
+  }
   try {
     const response = await forwardMcpRequest(
       request,

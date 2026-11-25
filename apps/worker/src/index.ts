@@ -185,5 +185,16 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   process.exit(exitCode);
 }
 
+// One outbound response must not end the process for every tenant (a webhook delivery or MCP refresh). undici
+// (behind @superlog/net-guard) has shipped bugs where a fetch the caller already
+// caught later emits an unhandled stream error or assertion; Node's default is
+// to exit. Log and keep serving: those errors carry no shared state.
+process.on("uncaughtException", (err) => {
+  logger.error({ err }, "uncaught exception; continuing");
+});
+process.on("unhandledRejection", (reason) => {
+  logger.error({ err: reason }, "unhandled rejection; continuing");
+});
+
 process.once("SIGTERM", () => void shutdown("SIGTERM"));
 process.once("SIGINT", () => void shutdown("SIGINT"));

@@ -23,6 +23,8 @@ import {
 import { createMcpServerForSession } from "./server.js";
 
 const log = logger.child({ scope: "mcp-bearer" });
+// Tool calls are small JSON; the route-level body limit in index.ts matches.
+export const MCP_REQUEST_BODY_BYTES = 2 * 1024 * 1024;
 const shouldLogLegacyScopeFallback = createBoundedTokenObservationTracker();
 
 type TokenContext = {
@@ -68,6 +70,7 @@ export function mountMcpPublic<T extends Hono<any, any, any>>(app: T, ch: ClickH
 
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
+      maxRequestBodySize: MCP_REQUEST_BODY_BYTES,
     });
     const server = createMcpServerForSession({
       ch,

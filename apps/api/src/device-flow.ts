@@ -53,3 +53,33 @@ export function isDeviceExpired(device: Device, now: number): boolean {
 export function isDeviceIntegrationExpired(device: Device, now: number): boolean {
   return now > (device.integrationExpiresAt ?? device.expiresAt);
 }
+
+export type DeviceRegistry = {
+  /** Stores the device after evicting expired ones; false when still full. */
+  add(device: Device, now: number): boolean;
+  byDeviceCode(deviceCode: string): Device | undefined;
+  byUserCode(userCode: string): Device | undefined;
+};
+
+// Device codes are minted without authentication, so the in-memory store
+// evicts devices once their last usable window has passed and refuses new
+// ones beyond a fixed size instead of growing with every request.
+export function createDeviceRegistry(input: { maxDevices: number }): DeviceRegistry {
+  const byDeviceCode = new Map<string, Device>();
+  const byUserCode = new Map<string, Device>();
+  return {
+    add(device, now) {
+      for (const [code, existing] of byDeviceCode) {
+        if (!isDeviceIntegrationExpired(existing, now)) continue;
+        byDeviceCode.delete(code);
+        byUserCode.delete(existing.userCode);
+      }
+      if (byDeviceCode.size >= input.maxDevices) return false;
+      byDeviceCode.set(device.deviceCode, device);
+      byUserCode.set(device.userCode, device);
+      return true;
+    },
+    byDeviceCode: (deviceCode) => byDeviceCode.get(deviceCode),
+    byUserCode: (userCode) => byUserCode.get(userCode),
+  };
+}

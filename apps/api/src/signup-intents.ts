@@ -30,3 +30,14 @@ export function normalizeSignupIntentReturnTo(value: unknown): string | null {
   if (url.protocol !== "http:" && url.protocol !== "https:") return null;
   return LOOPBACK_HOSTNAMES.has(url.hostname) ? value : null;
 }
+
+// Anyone can create an intent with a key hash they hold. Binding that key to a
+// project is only safe for the account the intent's signup link created; an
+// existing customer who opens someone else's link would otherwise hand the
+// link's author an ingest key for their project.
+export function signupIntentClaimableBy(
+  intent: { createdAt: Date },
+  user: { createdAt: Date },
+): boolean {
+  return user.createdAt.getTime() >= intent.createdAt.getTime();
+}

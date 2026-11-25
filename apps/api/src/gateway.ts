@@ -18,6 +18,7 @@ import {
   DEVICE_TTL_MS,
   type Device,
   type DeviceFlow,
+  createDeviceRegistry,
   isDeviceExpired,
   isDeviceIntegrationExpired,
   pollDeviceToken,
@@ -37,13 +38,14 @@ export type Principal = {
   orgName: string;
 };
 
-const devicesByDeviceCode = new Map<string, Device>();
-const devicesByUserCode = new Map<string, Device>();
+// Bounded so unauthenticated POST /oauth/device cannot grow memory without
+// limit (each process keeps its own; the route is also rate limited per IP).
+const devices = createDeviceRegistry({ maxDevices: 10_000 });
 
 export type IntegrationDevice = { userId: string; orgId: string; projectId: string };
 
 export function getLinkedDevice(userCode: string): IntegrationDevice | null {
-  const device = devicesByUserCode.get(userCode.toUpperCase());
+  const device = devices.byUserCode(userCode.toUpperCase());
   if (!device || !device.session) return null;
   if (isDeviceExpired(device, Date.now())) return null;
   if (device.status !== "user_linked") return null;
@@ -61,7 +63,7 @@ export function getLinkedDevice(userCode: string): IntegrationDevice | null {
 // the cli/MCP flow has its own approval semantics that shouldn't be reused
 // here.
 export function getSkillDeviceForIntegration(userCode: string): IntegrationDevice | null {
-  const device = devicesByUserCode.get(userCode.toUpperCase());
+  const device = devices.byUserCode(userCode.toUpperCase());
   if (!device || !device.session) return null;
   if (device.flow !== "skill") return null;
   if (isDeviceIntegrationExpired(device, Date.now())) return null;
@@ -74,7 +76,7 @@ export function getSkillDeviceForIntegration(userCode: string): IntegrationDevic
 }
 
 export function getDeviceFlow(userCode: string): DeviceFlow | null {
-  const device = devicesByUserCode.get(userCode.toUpperCase());
+  const device = devices.byUserCode(userCode.toUpperCase());
   if (!device) return null;
   return device.flow;
 }
@@ -114,8 +116,9 @@ export function mountGateway(app: Hono<any>, ch: ClickHouseClient): void {
       expiresAt: createdAt + DEVICE_TTL_MS,
       status: "pending",
     };
-    devicesByDeviceCode.set(deviceCode, device);
-    devicesByUserCode.set(userCode, device);
+    if (!devices.add(device, createdAt)) {
+      return c.json({ error: "temporarily_unavailable" }, 503);
+    }
     const verificationUri = new URL(`${webOrigin}/activate`);
     if (flow === "skill") verificationUri.searchParams.set("flow", "skill");
     const verificationUriComplete = new URL(verificationUri.toString());
@@ -141,7 +144,7 @@ export function mountGateway(app: Hono<any>, ch: ClickHouseClient): void {
     }
     const body = (await c.req.json().catch(() => ({}))) as { device_code?: string };
     if (!body.device_code) return next();
-    const device = devicesByDeviceCode.get(body.device_code);
+    const device = devices.byDeviceCode(body.device_code);
     if (!device) return c.json({ error: "invalid_grant" }, 400);
     const now = Date.now();
     const grant = pollDeviceToken(device, now);
@@ -200,7 +203,7 @@ export function mountGateway(app: Hono<any>, ch: ClickHouseClient): void {
       project_id?: string;
     };
     const userCode = body.user_code?.toUpperCase() ?? "";
-    const device = devicesByUserCode.get(userCode);
+    const device = devices.byUserCode(userCode);
     if (!device) return c.json({ error: "unknown device code" }, 404);
     if (isDeviceExpired(device, Date.now())) {
       device.status = "expired";
@@ -286,11 +289,10 @@ export function mountGateway(app: Hono<any>, ch: ClickHouseClient): void {
   app.post("/activate/finalize", async (c) => {
     const userId = await requireUserFromSession(c);
     if (userId instanceof Response) return userId;
-    void userId;
 
     const body = (await c.req.json().catch(() => ({}))) as { user_code?: string };
     const userCode = body.user_code?.toUpperCase() ?? "";
-    const device = devicesByUserCode.get(userCode);
+    const device = devices.byUserCode(userCode);
     if (!device) return c.json({ error: "unknown device code" }, 404);
     if (isDeviceExpired(device, Date.now())) {
       device.status = "expired";
@@ -307,6 +309,10 @@ export function mountGateway(app: Hono<any>, ch: ClickHouseClient): void {
     if (device.status === "approved") return c.json({ ok: true });
     if (device.status !== "user_linked" || !device.session) {
       return c.json({ error: "not ready to finalize" }, 409);
+    }
+    // Only the account that approved the device may release its CLI token.
+    if (device.session.userId !== userId) {
+      return c.json({ error: "unknown device code" }, 404);
     }
 
     device.status = "approved";

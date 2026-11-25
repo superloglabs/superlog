@@ -31,3 +31,21 @@ test("configured web origins ignore malformed aliases", () => {
     ],
   );
 });
+
+test("production trusts only configured HTTPS origins, never localhost", () => {
+  assert.deepEqual(
+    configuredWebOrigins({
+      SUPERLOG_ENV: "production",
+      WEB_ORIGIN: "https://telemetry.superlog.sh",
+      WEB_ORIGIN_ALIASES: "https://superlog.sh, http://localhost:5173, https://app.localhost",
+    }),
+    ["https://telemetry.superlog.sh", "https://superlog.sh"],
+  );
+});
+
+test("NODE_ENV=production also drops the localhost origins", () => {
+  assert.deepEqual(
+    configuredWebOrigins({ NODE_ENV: "production", WEB_ORIGIN: "https://telemetry.superlog.sh" }),
+    ["https://telemetry.superlog.sh"],
+  );
+});

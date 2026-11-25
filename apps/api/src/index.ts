@@ -60,7 +60,10 @@ import {
   requestWithAuthClientIp,
   resolveAuthClientIp,
 } from "./auth-client-ip.js";
-import { enforceGlobalAuthRateLimit } from "./auth-global-rate-limit.js";
+import {
+  enforceAccountSignInRateLimit,
+  enforceGlobalAuthRateLimit,
+} from "./auth-global-rate-limit.js";
 import { startAuthRateLimitCleanup } from "./auth-rate-limit-cleanup.js";
 import { recordAuthRateLimited } from "./auth-rate-limit-metrics.js";
 import { createDrizzleAuthRateLimitRepository } from "./auth-rate-limit-repository.js";
@@ -75,6 +78,7 @@ import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
 import { createApiClickHouseClient } from "./clickhouse-client.js";
 import { mountCloudConnectionsAuthed } from "./cloud-connections.js";
 import { mountCloudflareAuthed, mountCloudflarePublic } from "./cloudflare.js";
+import { crossOriginGuard } from "./cross-origin-guard.js";
 import { mountDashboards } from "./dashboards.js";
 import {
   demoOverlay,
@@ -144,7 +148,7 @@ import {
   queryTraces,
   queryTracesAggregated,
 } from "./mcp/clickhouse.js";
-import { mountMcpAuthed, mountMcpPublic } from "./mcp/index.js";
+import { MCP_REQUEST_BODY_BYTES, mountMcpAuthed, mountMcpPublic } from "./mcp/index.js";
 import { mountNotionAuthed, mountNotionPublic } from "./notion.js";
 import { suggestOrgNameFromEmail } from "./onboarding-org-suggestion.js";
 import {
@@ -169,6 +173,7 @@ import {
 } from "./project-mcp-servers.js";
 import { mountProjectRouteContext } from "./project-route-context.js";
 import { mountRailwayAuthed, mountRailwayPublic } from "./railway.js";
+import { rawPathGuard } from "./raw-path-guard.js";
 import { mountRenderAuthed } from "./render.js";
 import {
   type ActorAuditDeps,
@@ -197,6 +202,7 @@ import {
   normalizeSignupIntentKeyHash,
   normalizeSignupIntentKeyPrefix,
   normalizeSignupIntentReturnTo,
+  signupIntentClaimableBy,
 } from "./signup-intents.js";
 import { mountSlackAuthed, mountSlackPublic } from "./slack.js";
 import { sourceMapObjectStoreFromEnv } from "./sourcemaps.js";
@@ -243,8 +249,17 @@ logger.info(
 const incidentLifecycle = createIncidentLifecycle(db);
 const sourceMapObjectStore = sourceMapObjectStoreFromEnv(process.env);
 
+// First, so no route or edge-dependent check sees a path the edge read differently.
+app.use("*", rawPathGuard());
 mountApiRequestSecurity(app, WEB_CORS_ORIGINS);
-app.use("/mcp", requestBodyLimit(8 * 1024 * 1024));
+app.use(
+  "*",
+  crossOriginGuard([
+    ...WEB_CORS_ORIGINS,
+    new URL(process.env.BETTER_AUTH_URL ?? "http://localhost:4100").origin,
+  ]),
+);
+app.use("/mcp", requestBodyLimit(MCP_REQUEST_BODY_BYTES));
 app.use("/oauth/*", requestBodyLimit(64 * 1024));
 app.use("/activate/*", requestBodyLimit(64 * 1024));
 app.use("/feedback/*", requestBodyLimit(64 * 1024));
@@ -277,6 +292,9 @@ app.use(
   "/.well-known/*",
   cors({
     origin: "*",
+    // A fixed list: without one, the CORS middleware echoes the request's
+    // Access-Control-Request-Headers after splitting it with a regex.
+    allowHeaders: ["content-type", "mcp-protocol-version"],
     allowMethods: ["GET", "OPTIONS"],
   }),
 );
@@ -303,6 +321,39 @@ app.use(
     allowMethods: ["POST", "OPTIONS"],
   }),
 );
+
+function clientIpOf(c: Context): string | undefined {
+  return resolveAuthClientIp({
+    peerIp: getConnInfo(c).remote.address,
+    forwardedFor: c.req.header("x-forwarded-for"),
+    behindTrustedProxy: AUTH_BEHIND_TRUSTED_PROXY,
+  });
+}
+
+// Per-client-address limit for unauthenticated routes that create state
+// (device codes in memory, rows in Postgres). Windows must stay within the
+// rate-limit table's retention (AUTH_RATE_LIMIT_RETENTION_MS).
+function limitPerClientIp(scope: string, max: number, windowMs: number) {
+  return async (c: Context, next: () => Promise<void>) => {
+    const decision = await authRateLimitRepository.consume({
+      key: `${scope}:${clientIpOf(c) ?? "no-client-ip"}`,
+      max,
+      windowMs,
+      nowEpochMs: Date.now(),
+    });
+    if (!decision.allowed) {
+      const retryAfter = String(decision.retryAfterSeconds ?? windowMs / 1000);
+      return c.json({ error: "too many requests" }, 429, { "retry-after": retryAfter });
+    }
+    await next();
+  };
+}
+
+const TEN_MINUTES_MS = 10 * 60 * 1000;
+const ONE_HOUR_MS = 60 * 60 * 1000;
+app.post("/oauth/device", limitPerClientIp("public:oauth-device", 30, TEN_MINUTES_MS));
+app.post("/oauth/register", limitPerClientIp("public:oauth-register", 10, ONE_HOUR_MS));
+app.post("/api/signup-intents", limitPerClientIp("public:signup-intents", 20, ONE_HOUR_MS));
 
 app.get("/health", (c) => c.json({ ok: true }));
 
@@ -388,6 +439,20 @@ app.on(["POST", "GET"], "/api/auth/*", async (c) => {
     // path for the request that exhausts the aggregate bucket.
     recordAuthRateLimited("/api/auth/*", DEPLOYMENT_ENVIRONMENT);
     return globalLimitResponse;
+  }
+  if (c.req.method === "POST" && c.req.path === "/api/auth/sign-in/email") {
+    const body = (await c.req.raw
+      .clone()
+      .json()
+      .catch(() => null)) as { email?: unknown } | null;
+    const accountLimitResponse = await enforceAccountSignInRateLimit(
+      authRateLimitRepository,
+      typeof body?.email === "string" ? body.email : undefined,
+    );
+    if (accountLimitResponse) {
+      recordAuthRateLimited(c.req.path, DEPLOYMENT_ENVIRONMENT);
+      return accountLimitResponse;
+    }
   }
   const response = await auth.handler(requestWithAuthClientIp(c.req.raw, clientIp));
   if (response.status === 429) {
@@ -847,6 +912,9 @@ app.post("/api/signup-intents/:intentId/claim", async (c) => {
         "signup intent expired",
       );
       throw new HTTPException(410, { message: "signup intent expired" });
+    }
+    if (!signupIntentClaimableBy(intent, user)) {
+      throw new HTTPException(403, { message: "signup intent belongs to another sign-up" });
     }
     if (intent.consumedAt) {
       if (intent.claimedProjectId === project.id) {
@@ -3524,6 +3592,17 @@ startAuthRateLimitCleanup({
     },
   },
   onError: (error) => logger.warn({ err: error }, "failed to clear expired auth rate limits"),
+});
+
+// One outbound response must not end the process for every tenant. undici
+// (behind @superlog/net-guard) has shipped bugs where a fetch the caller already
+// caught later emits an unhandled stream error or assertion; Node's default is
+// to exit. Log and keep serving: those errors carry no shared state.
+process.on("uncaughtException", (err) => {
+  logger.error({ err }, "uncaught exception; continuing");
+});
+process.on("unhandledRejection", (reason) => {
+  logger.error({ err: reason }, "unhandled rejection; continuing");
 });
 
 const server = serve({ fetch: app.fetch, port: PORT });

@@ -101,6 +101,9 @@ export function mountOauthMetadata(app: Hono, cfg: McpConfig) {
   );
 }
 
+const MAX_REDIRECT_URIS = 10;
+const MAX_REDIRECT_URI_LENGTH = 2048;
+
 export function mountOauthEndpoints(app: Hono, cfg: McpConfig) {
   app.post("/oauth/register", async (c) => {
     const body = (await c.req.json().catch(() => null)) as {
@@ -115,6 +118,13 @@ export function mountOauthEndpoints(app: Hono, cfg: McpConfig) {
       : [];
     if (redirectUris.length === 0) {
       return oauthError(c, 400, "invalid_redirect_uri", "redirect_uris is required");
+    }
+    // Registration needs no authentication; keep each stored row small.
+    if (
+      redirectUris.length > MAX_REDIRECT_URIS ||
+      redirectUris.some((uri) => uri.length > MAX_REDIRECT_URI_LENGTH)
+    ) {
+      return oauthError(c, 400, "invalid_redirect_uri", "too many or too long redirect_uris");
     }
     for (const uri of redirectUris) {
       if (!isValidRedirectUri(uri)) {
@@ -132,7 +142,10 @@ export function mountOauthEndpoints(app: Hono, cfg: McpConfig) {
       );
     }
 
-    const name = (body.client_name ?? "MCP client").slice(0, 200);
+    const name = (typeof body.client_name === "string" ? body.client_name : "MCP client").slice(
+      0,
+      200,
+    );
     const [client] = await db
       .insert(schema.mcpOauthClients)
       .values({ name, redirectUris, tokenEndpointAuthMethod: "none" })
