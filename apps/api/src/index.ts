@@ -1063,15 +1063,11 @@ app.post("/api/me/billing/payg-promotion", async (c) => {
 // is the auto_enable default, so attaching it when already on Free returns a
 // "plan_already_attached" conflict, which we treat as a no-op success. Per-org
 // (org = Autumn customer); the carry-over closes the toggle-to-reset loophole.
+// Changing the plan is reserved for org managers, like the spend limit.
 app.post("/api/me/billing/cancel", async (c) => {
-  const ctx = await resolveMaybeActiveOrgContext({
-    userId: c.var.userId,
-    preferredOrgId: c.var.orgId,
-  });
-  if (!ctx.org) throw new HTTPException(400, { message: "no active org" });
+  const { orgId } = await requireOrgManagerContext(c);
   const key = process.env.AUTUMN_SECRET_KEY;
   if (!key) throw new HTTPException(400, { message: "billing is not configured" });
-  const orgId = ctx.org.id;
   // "Switch to Free" — per Autumn's guidance, attach the Free plan immediately
   // and carry usage over, rather than cancelling the paid plan. When a paid
   // plan is active this is a real downgrade: planSchedule:"immediate" applies it
