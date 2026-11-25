@@ -25,7 +25,8 @@ type RelayEnv = Partial<
     | "BROWSER_TELEMETRY_OTLP_HEADERS"
     | "OTEL_EXPORTER_OTLP_ENDPOINT"
     | "OTEL_EXPORTER_OTLP_HEADERS"
-    | "OTEL_EXPORTER_OTLP_PROTOCOL",
+    | "OTEL_EXPORTER_OTLP_PROTOCOL"
+    | "OTEL_SDK_DISABLED",
     string | undefined
   >
 >;
@@ -53,8 +54,10 @@ function tracesUrl(endpoint: string): string {
 
 /**
  * The relay target. A dedicated BROWSER_TELEMETRY_OTLP_* pair wins; otherwise
- * the relay reuses the API's own OTLP/HTTP exporter settings. The API's
- * exporter headers are only ever sent to the API's exporter endpoint.
+ * the relay reuses the API's own OTLP/HTTP exporter settings, unless the API's
+ * own telemetry is switched off (tracing.ts sets OTEL_SDK_DISABLED outside
+ * production). The API's exporter headers are only ever sent to the API's
+ * exporter endpoint.
  */
 export function browserTelemetryRelayConfigFromEnv(
   env: RelayEnv,
@@ -69,6 +72,7 @@ export function browserTelemetryRelayConfigFromEnv(
   const exporter = env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim();
   const protocol = env.OTEL_EXPORTER_OTLP_PROTOCOL?.trim().toLowerCase();
   if (!exporter || protocol === "grpc") return null;
+  if (env.OTEL_SDK_DISABLED?.trim().toLowerCase() === "true") return null;
   return {
     tracesUrl: tracesUrl(exporter),
     headers: parseOtlpHeaders(env.OTEL_EXPORTER_OTLP_HEADERS),

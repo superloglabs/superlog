@@ -88,6 +88,21 @@ test("never forwards the caller's own credentials", async () => {
   assert.equal(headers.get("cookie"), null);
 });
 
+test("forwards OTLP protobuf bodies with their content type", async () => {
+  const { app, forwarded } = relayApp(CONFIG);
+
+  const res = await app.request(
+    "/api/browser-telemetry/v1/traces",
+    post("\u0000\u0001", { "content-type": "application/x-protobuf" }),
+  );
+
+  assert.equal(res.status, 200);
+  assert.equal(
+    new Headers(forwarded[0]?.init.headers).get("content-type"),
+    "application/x-protobuf",
+  );
+});
+
 test("rejects content types other than OTLP JSON or protobuf", async () => {
   const { app, forwarded } = relayApp(CONFIG);
 
@@ -173,6 +188,22 @@ test("does not send the API's exporter headers to a different relay endpoint", (
   });
 
   assert.deepEqual(config, { tracesUrl: "https://other.example.com/v1/traces", headers: {} });
+});
+
+test("does not fall back to the API exporter when the OTel SDK is disabled", () => {
+  const exporterEnv = {
+    OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector.internal:4000",
+    OTEL_EXPORTER_OTLP_HEADERS: "Authorization=Bearer server-key",
+    OTEL_SDK_DISABLED: "true",
+  };
+  assert.equal(browserTelemetryRelayConfigFromEnv(exporterEnv), null);
+  assert.deepEqual(
+    browserTelemetryRelayConfigFromEnv({
+      ...exporterEnv,
+      BROWSER_TELEMETRY_OTLP_ENDPOINT: "https://intake.example.com",
+    }),
+    { tracesUrl: "https://intake.example.com/v1/traces", headers: {} },
+  );
 });
 
 test("is disabled without an endpoint or for a gRPC exporter", () => {
