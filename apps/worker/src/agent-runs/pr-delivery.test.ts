@@ -1148,6 +1148,44 @@ test("preflight recovers a pushed delivery without requiring the session patch",
   assert.equal(validated, false);
 });
 
+test("preflight refuses a recovered delivery whose branch touches protected paths", async () => {
+  const prepared = await preflightProposedPullRequest(
+    {
+      prPolicy: "always",
+      githubInstalls: [{ installation: { installationId: 99 } }],
+      incident: { id: "incident-1" },
+      agentRun: { id: "run-1" },
+      agentDependencyChangesEnabled: false,
+    } as unknown as AgentRunContext,
+    { ...proposedPullRequest, changedFiles: undefined },
+    "session-1",
+    deliveryIdentity,
+    {
+      findRecordedDelivery: async () => null,
+      listRepositories: async () => [
+        {
+          id: 123,
+          fullName: "acme/api",
+          private: false,
+          defaultBranch: "main",
+          installation: { installationId: 99 } as never,
+        },
+      ],
+      findGithubDelivery: async () => ({
+        kind: "branch",
+        branchName: "ash/fix-api-retry-d4e5f607",
+        headSha: "abc123",
+        baseBranch: "main",
+      }),
+      findGithubDeliveryChangedFiles: async () => ["src/retries.ts", ".github/workflows/ci.yml"],
+    },
+  );
+
+  assert.equal(prepared.ok, false);
+  if (prepared.ok) return;
+  assert.match(prepared.error, /\.github\/workflows\/ci\.yml/);
+});
+
 test("preflight returns a structured retry when recovered changed files cannot be loaded", async () => {
   const prepared = await preflightProposedPullRequest(
     {

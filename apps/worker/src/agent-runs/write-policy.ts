@@ -31,9 +31,30 @@ const CI_FILE_NAMES = new Set([
   ".drone.yml",
   "cloudbuild.yaml",
   "cloudbuild.yml",
+  "buildspec.yml",
+  "buildspec.yaml",
+  ".cirrus.yml",
+  ".woodpecker.yml",
+  ".woodpecker.yaml",
+  "codemagic.yaml",
+  "bitrise.yml",
+  ".gitpod.yml",
+  "lefthook.yml",
+  "lefthook.yaml",
 ]);
 
-const CI_DIRECTORIES = new Set([".github", ".gitlab", ".circleci", ".buildkite", ".husky"]);
+const CI_DIRECTORIES = new Set([
+  ".github",
+  ".gitlab",
+  ".gitea",
+  ".forgejo",
+  ".circleci",
+  ".buildkite",
+  ".semaphore",
+  ".woodpecker",
+  ".tekton",
+  ".husky",
+]);
 
 const DEPENDENCY_FILE_NAMES = new Set([
   ".gitmodules",

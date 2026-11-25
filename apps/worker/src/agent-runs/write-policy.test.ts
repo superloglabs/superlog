@@ -24,6 +24,12 @@ test("CI and automation config is protected at any depth of .github and in known
     "bitbucket-pipelines.yml",
     ".pre-commit-config.yaml",
     ".husky/pre-commit",
+    "buildspec.yml",
+    ".cirrus.yml",
+    ".woodpecker/build.yml",
+    ".semaphore/semaphore.yml",
+    ".gitea/workflows/ci.yml",
+    ".forgejo/workflows/ci.yml",
   ]) {
     assert.equal(protectedPathCategory(path), "ci", path);
   }

@@ -1965,6 +1965,10 @@ export async function preflightProposedPullRequest(
           recovered,
         });
         pr.changedFiles = normalizedChangedFiles([...(pr.changedFiles ?? []), ...recoveredFiles]);
+        const refusedRecovered = refusedAgentChanges(recoveredFiles, agentWritePolicy(ctx));
+        if (refusedRecovered.length > 0) {
+          return { ok: false, error: agentWritePolicyError(refusedRecovered) };
+        }
         return { ok: true, prepared: { kind: "github_recovery" } };
       } catch (err) {
         logger.error(
