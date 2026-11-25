@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { metrics } from "@opentelemetry/api";
+import { type AgentWritePolicy, assertAgentChangesAllowed } from "./agent-runs/write-policy.js";
 import { logger } from "./logger.js";
 
 type GithubPermission = "read" | "write";
@@ -955,10 +956,15 @@ function gitApplyError(args: string[], result: GitResult, patch: string): Error 
 // `env` must carry the GitHub auth header: with a blobless partial clone the
 // pre-image blob is not present locally, so `--3way` lazily fetches it from the
 // `origin` promisor remote during apply — an unauthenticated fetch would 404.
+//
+// After applying, the paths git staged are checked against the agent write
+// policy (see agent-runs/write-policy.ts), so every delivery path refuses
+// protected files on the same ground truth, including renames and deletions.
 export async function applyAgentPatch(opts: {
   repoDir: string;
   patchPath: string;
   env?: NodeJS.ProcessEnv;
+  writePolicy: AgentWritePolicy;
 }): Promise<void> {
   const applyArgs = ["apply", "--3way", "--index", "--whitespace=nowarn", opts.patchPath];
   const result = await runGit(applyArgs, { cwd: opts.repoDir, env: opts.env });
@@ -966,6 +972,31 @@ export async function applyAgentPatch(opts: {
     const patchBody = await readFile(opts.patchPath, "utf8").catch(() => "");
     throw gitApplyError(applyArgs, result, patchBody);
   }
+  const staged = await ensureGitOk(["diff", "--cached", "--raw", "--no-renames", "-z"], {
+    cwd: opts.repoDir,
+  });
+  const changes = parseStagedRawDiff(staged.stdout);
+  assertAgentChangesAllowed(
+    changes.map((change) => change.path),
+    opts.writePolicy,
+    changes.filter((change) => change.gitlink).map((change) => change.path),
+  );
+}
+
+// Parses `git diff --raw -z` output: ":<old mode> <new mode> <old sha>
+// <new sha> <status>\0<path>\0" per entry (renames are off). Mode 160000 is
+// a submodule gitlink.
+export function parseStagedRawDiff(output: string): Array<{ path: string; gitlink: boolean }> {
+  const fields = output.split("\0");
+  const changes: Array<{ path: string; gitlink: boolean }> = [];
+  for (let index = 0; index + 1 < fields.length; index += 2) {
+    const header = fields[index];
+    const changedPath = fields[index + 1];
+    if (!header?.startsWith(":") || !changedPath) continue;
+    const [oldMode, newMode] = header.slice(1).split(" ");
+    changes.push({ path: changedPath, gitlink: oldMode === "160000" || newMode === "160000" });
+  }
+  return changes;
 }
 
 async function cloneRepositoryAtBaseBranch(opts: {
@@ -1347,6 +1378,7 @@ export async function validateAgentPatchApplicability(opts: {
   repositoryId?: number;
   repoFullName: string;
   patch: string;
+  writePolicy: AgentWritePolicy;
   baseBranch?: string | null;
   existingBranch?: string | null;
 }): Promise<string> {
@@ -1380,7 +1412,7 @@ export async function validateAgentPatchApplicability(opts: {
     }
     const patchPath = path.join(workdir, "superlog.patch");
     await writeFile(patchPath, normalizeAgentPatch(opts.patch), "utf8");
-    await applyAgentPatch({ repoDir, patchPath, env: gitAuthEnv });
+    await applyAgentPatch({ repoDir, patchPath, env: gitAuthEnv, writePolicy: opts.writePolicy });
     const status = await ensureGitOk(["status", "--porcelain"], { cwd: repoDir });
     if (!status.stdout.trim()) throw new Error("patch produced no working tree changes");
     return resolvedBaseBranch;
@@ -1394,6 +1426,7 @@ export async function applyPatchAndOpenPr(opts: {
   repositoryId?: number;
   repoFullName: string;
   patch: string;
+  writePolicy: AgentWritePolicy;
   branchName: string;
   title: string;
   body: string;
@@ -1473,7 +1506,7 @@ export async function applyPatchAndOpenPr(opts: {
       const patchPath = path.join(workdir, "superlog.patch");
       const patchBody = normalizeAgentPatch(opts.patch);
       await writeFile(patchPath, patchBody, "utf8");
-      await applyAgentPatch({ repoDir, patchPath, env: gitAuthEnv });
+      await applyAgentPatch({ repoDir, patchPath, env: gitAuthEnv, writePolicy: opts.writePolicy });
 
       // The agent validates its own patch inside its session sandbox (running
       // the project's build/tests/repro as it sees fit) and reports the outcome
@@ -1558,6 +1591,7 @@ export async function pushPatchToExistingAgentPr(opts: {
   repositoryId?: number;
   repoFullName: string;
   patch: string;
+  writePolicy: AgentWritePolicy;
   branchName: string;
   prNumber: number;
   commitTitle: string;
@@ -1625,7 +1659,7 @@ export async function pushPatchToExistingAgentPr(opts: {
       const patchPath = path.join(workdir, "superlog.patch");
       const patchBody = normalizeAgentPatch(opts.patch);
       await writeFile(patchPath, patchBody, "utf8");
-      await applyAgentPatch({ repoDir, patchPath, env: gitAuthEnv });
+      await applyAgentPatch({ repoDir, patchPath, env: gitAuthEnv, writePolicy: opts.writePolicy });
       const status = await ensureGitOk(["status", "--porcelain"], { cwd: repoDir });
       if (!status.stdout.trim()) {
         throw new Error("patch produced no working tree changes");

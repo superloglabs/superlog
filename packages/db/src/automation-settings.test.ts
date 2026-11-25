@@ -9,3 +9,8 @@ test("resolve-time Linear ticket creation is opt-in", () => {
 test("quiet incident auto-resolution can be disabled per project", () => {
   assert.equal(projectAutomationSettings.autoResolveStaleIncidentsEnabled.default, true);
 });
+
+test("agent changes to dependency manifests and lockfiles are opt-in", () => {
+  assert.equal(projectAutomationSettings.agentDependencyChangesEnabled.default, false);
+  assert.equal(projectAutomationSettings.agentDependencyChangesEnabled.notNull, true);
+});

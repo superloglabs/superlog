@@ -1167,6 +1167,12 @@ export const projectAutomationSettings = pgTable(
       .notNull()
       .default(true),
     prBaseBranch: text("pr_base_branch"),
+    // Agent pull requests never change CI config or agent instruction files.
+    // Dependency manifests and lockfiles are refused too unless the project
+    // opts in here.
+    agentDependencyChangesEnabled: boolean("agent_dependency_changes_enabled")
+      .notNull()
+      .default(false),
     // Slack digests follow the same project boundary as the installation and
     // incident channel. Null means this project has not adopted/configured a
     // digest yet, allowing the legacy org setting to be migrated once.

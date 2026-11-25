@@ -3544,6 +3544,7 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
     linearDefaultTeamId: null,
     autoResolveStaleIncidentsEnabled: true,
     prBaseBranch: null,
+    agentDependencyChangesEnabled: false,
     autoMergeFixPrs: "never",
     autoMergeMethod: "squash",
     issueFilterConfig: EMPTY_ISSUE_FILTER_CONFIG,
@@ -3713,8 +3714,9 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
           ) : (
             <div className="space-y-4">
               <p className="text-[12.5px] text-muted">
-                When on, the agent opens a pull request whenever it lands on a concrete code area.
-                When off, the agent only surfaces findings — no PRs.
+                When on, the agent opens a pull request on its own once it has a validated fix. When
+                off, it posts its findings with an Open a PR button in Slack, so a person decides
+                before anything is pushed.
               </p>
               <PrBaseBranchField
                 value={data.prBaseBranch}
@@ -3724,6 +3726,23 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
                 disabled={!downstreamEligible || data.prPolicy === "never" || save.isPending}
                 onSave={(v) => patch({ prBaseBranch: v })}
               />
+              <div className="flex items-start justify-between gap-4 rounded-md border border-border px-3 py-3">
+                <div>
+                  <div className="text-[12.5px] font-medium text-foreground">
+                    Allow dependency changes
+                  </div>
+                  <p className="mt-1 text-[12px] text-muted">
+                    Lets agent pull requests change dependency manifests and lockfiles. Your CI
+                    installs them before anyone reviews the change. Agent pull requests never change
+                    CI config or agent instruction files.
+                  </p>
+                </div>
+                <Toggle
+                  checked={data.agentDependencyChangesEnabled}
+                  disabled={!downstreamEligible || save.isPending}
+                  onChange={(v) => patch({ agentDependencyChangesEnabled: v })}
+                />
+              </div>
               <AutoMergeControls
                 policy={data.autoMergeFixPrs}
                 method={data.autoMergeMethod}

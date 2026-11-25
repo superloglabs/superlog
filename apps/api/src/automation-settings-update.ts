@@ -14,6 +14,7 @@ export type AutomationSettingsUpdateValues = {
   linearDefaultTeamId: string | null;
   autoResolveStaleIncidentsEnabled: boolean;
   prBaseBranch: string | null;
+  agentDependencyChangesEnabled: boolean;
   autoMergeFixPrs: string;
   autoMergeMethod: string;
   issueFilterConfig: unknown;
@@ -97,6 +98,9 @@ export function buildAutomationSettingsConflictUpdate<T extends AutomationSettin
       ? { autoResolveStaleIncidentsEnabled: values.autoResolveStaleIncidentsEnabled }
       : {}),
     ...(body.prBaseBranch !== undefined ? { prBaseBranch: values.prBaseBranch } : {}),
+    ...(typeof body.agentDependencyChangesEnabled === "boolean"
+      ? { agentDependencyChangesEnabled: values.agentDependencyChangesEnabled }
+      : {}),
     ...(typeof body.autoMergeFixPrs === "string" && AUTO_MERGE_POLICIES.has(body.autoMergeFixPrs)
       ? { autoMergeFixPrs: values.autoMergeFixPrs }
       : {}),

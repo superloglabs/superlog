@@ -10,6 +10,7 @@ import {
   compensatePullRequestDelivery,
   deliverProposedPullRequest,
   guardProposedPullRequestOverlap,
+  legacyDeliveryIdentityBaseBranch,
   overlappingFilesForPullRequestClaim,
   preflightProposedPullRequest,
   publishPullRequestUpdateIfCurrent,
@@ -501,11 +502,33 @@ test("resolvePullRequestBaseBranch prefers the configured project branch", () =>
   assert.equal(resolvePullRequestBaseBranch(ctx, pr), "development");
 });
 
-test("resolvePullRequestBaseBranch falls back to the agent branch when unset", () => {
+test("resolvePullRequestBaseBranch ignores an agent-chosen base branch when the project sets none", () => {
   const ctx = { prBaseBranch: null } as AgentRunContext;
-  const pr = { baseBranch: "main" } as schema.AgentRunPr;
+  const pr = { baseBranch: "release/production" } as schema.AgentRunPr;
 
-  assert.equal(resolvePullRequestBaseBranch(ctx, pr), "main");
+  assert.equal(resolvePullRequestBaseBranch(ctx, pr), null);
+});
+
+test("legacy delivery receipts keep hashing the base branch the run asked for", () => {
+  assert.equal(
+    legacyDeliveryIdentityBaseBranch({ prBaseBranch: null }, { baseBranch: "release" }),
+    "release",
+  );
+  assert.equal(
+    legacyDeliveryIdentityBaseBranch({ prBaseBranch: "develop" }, { baseBranch: "release" }),
+    "develop",
+  );
+});
+
+test("resolvePullRequestTargetBaseBranch targets the repository default, not the agent's branch", () => {
+  assert.equal(
+    resolvePullRequestTargetBaseBranch(
+      { prBaseBranch: null },
+      { baseBranch: "release/production" },
+      "main",
+    ),
+    "main",
+  );
 });
 
 test("resolvePullRequestBaseBranch lets GitHub use the repository default when both are blank", () => {
@@ -924,6 +947,100 @@ test("preflight blocks a patch when another incident already has an open PR touc
   assert.equal(validated, true);
 });
 
+test("preflight refuses a patch that touches protected paths before cloning the repository", async () => {
+  let validated = false;
+  const prepared = await preflightProposedPullRequest(
+    {
+      prPolicy: "on_ready_to_pr",
+      githubInstalls: [{ installation: { installationId: 99 } }],
+      project: { id: "project-1" },
+      incident: { id: "incident-2", firstSeen: new Date(), service: "api" },
+      agentRun: { id: "run-2" },
+      prBaseBranch: null,
+      agentDependencyChangesEnabled: false,
+    } as unknown as AgentRunContext,
+    { ...proposedPullRequest, changedFiles: undefined },
+    "session-2",
+    undefined,
+    {
+      listRepositories: async () => [
+        {
+          id: 123,
+          fullName: "acme/api",
+          private: false,
+          defaultBranch: "main",
+          installation: { installationId: 99 } as never,
+        },
+      ],
+      downloadPatch: async () => ({
+        patch: [
+          "diff --git a/src/retries.ts b/src/retries.ts",
+          "diff --git a/package.json b/package.json",
+          "diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml",
+          "",
+        ].join("\n"),
+        fileId: "file-2",
+      }),
+      findOverlappingOpenPullRequest: async () => null,
+      findCurrentOpenPullRequest: async () => undefined,
+      validatePatch: async () => {
+        validated = true;
+        return "main";
+      },
+    },
+  );
+
+  assert.equal(prepared.ok, false);
+  if (prepared.ok) return;
+  assert.match(prepared.error, /package\.json/);
+  assert.match(prepared.error, /\.github\/workflows\/ci\.yml/);
+  assert.doesNotMatch(prepared.error, /src\/retries\.ts/);
+  assert.match(prepared.error, /call propose_pr again/);
+  assert.equal(validated, false);
+});
+
+test("preflight passes the project's write policy to the applicability check", async () => {
+  let policy: unknown;
+  const prepared = await preflightProposedPullRequest(
+    {
+      prPolicy: "on_ready_to_pr",
+      githubInstalls: [{ installation: { installationId: 99 } }],
+      project: { id: "project-1" },
+      incident: { id: "incident-2", firstSeen: new Date(), service: "api" },
+      agentRun: { id: "run-2" },
+      prBaseBranch: null,
+      agentDependencyChangesEnabled: true,
+    } as unknown as AgentRunContext,
+    { ...proposedPullRequest, changedFiles: undefined },
+    "session-2",
+    undefined,
+    {
+      listRepositories: async () => [
+        {
+          id: 123,
+          fullName: "acme/api",
+          private: false,
+          defaultBranch: "main",
+          installation: { installationId: 99 } as never,
+        },
+      ],
+      downloadPatch: async () => ({
+        patch: "diff --git a/package.json b/package.json\n",
+        fileId: "file-2",
+      }),
+      findOverlappingOpenPullRequest: async () => null,
+      findCurrentOpenPullRequest: async () => undefined,
+      validatePatch: async (input) => {
+        policy = input.writePolicy;
+        return "main";
+      },
+    },
+  );
+
+  assert.equal(prepared.ok, true);
+  assert.deepEqual(policy, { allowDependencyChanges: true });
+});
+
 test("preflight persists diff-derived paths on the proposal for the durable run result", async () => {
   const proposal = {
     ...proposedPullRequest,
@@ -1041,6 +1158,44 @@ test("preflight recovers a pushed delivery without requiring the session patch",
   assert.equal(downloaded, false);
   assert.deepEqual(proposal.changedFiles, ["src/retries.ts"]);
   assert.equal(validated, false);
+});
+
+test("preflight refuses a recovered delivery whose branch touches protected paths", async () => {
+  const prepared = await preflightProposedPullRequest(
+    {
+      prPolicy: "always",
+      githubInstalls: [{ installation: { installationId: 99 } }],
+      incident: { id: "incident-1" },
+      agentRun: { id: "run-1" },
+      agentDependencyChangesEnabled: false,
+    } as unknown as AgentRunContext,
+    { ...proposedPullRequest, changedFiles: undefined },
+    "session-1",
+    deliveryIdentity,
+    {
+      findRecordedDelivery: async () => null,
+      listRepositories: async () => [
+        {
+          id: 123,
+          fullName: "acme/api",
+          private: false,
+          defaultBranch: "main",
+          installation: { installationId: 99 } as never,
+        },
+      ],
+      findGithubDelivery: async () => ({
+        kind: "branch",
+        branchName: "ash/fix-api-retry-d4e5f607",
+        headSha: "abc123",
+        baseBranch: "main",
+      }),
+      findGithubDeliveryChangedFiles: async () => ["src/retries.ts", ".github/workflows/ci.yml"],
+    },
+  );
+
+  assert.equal(prepared.ok, false);
+  if (prepared.ok) return;
+  assert.match(prepared.error, /\.github\/workflows\/ci\.yml/);
 });
 
 test("preflight returns a structured retry when recovered changed files cannot be loaded", async () => {

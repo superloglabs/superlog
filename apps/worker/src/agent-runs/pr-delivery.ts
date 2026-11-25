@@ -61,6 +61,12 @@ import {
   publishAwaitingEventsUpdateIfCurrent,
   reconcileStaleAgentRunPublication,
 } from "./status.js";
+import {
+  type AgentWritePolicy,
+  AgentWritePolicyError,
+  agentWritePolicyError,
+  refusedAgentChanges,
+} from "./write-policy.js";
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
 const DEFAULT_COMMIT_AUTHOR = {
@@ -195,11 +201,32 @@ async function notifyFollowUpPrUpdated(
   );
 }
 
+// The base branch is the project's configured branch, or the repository
+// default when none is set. The agent's own choice is ignored: its input
+// includes text from outside the workspace, and a pull request against a
+// release or deploy branch is not its decision to make.
 export function resolvePullRequestBaseBranch(
+  ctx: Pick<AgentRunContext, "prBaseBranch">,
+  _pr: Pick<schema.AgentRunPr, "baseBranch">,
+): string | null {
+  return normalizePrBaseBranch(ctx.prBaseBranch);
+}
+
+// The legacy delivery receipt hashes the base branch the run asked for. Keep
+// hashing the same value as before the agent's choice was ignored, so a run
+// that recorded a receipt earlier can still resume it. The PR itself always
+// targets resolvePullRequestTargetBaseBranch.
+export function legacyDeliveryIdentityBaseBranch(
   ctx: Pick<AgentRunContext, "prBaseBranch">,
   pr: Pick<schema.AgentRunPr, "baseBranch">,
 ): string | null {
   return normalizePrBaseBranch(ctx.prBaseBranch) ?? normalizePrBaseBranch(pr.baseBranch);
+}
+
+export function agentWritePolicy(
+  ctx: Pick<AgentRunContext, "agentDependencyChangesEnabled">,
+): AgentWritePolicy {
+  return { allowDependencyChanges: ctx.agentDependencyChangesEnabled === true };
 }
 
 export function resolvePullRequestTargetBaseBranch(
@@ -328,6 +355,7 @@ export async function completeWithPullRequest(
   const prTitle = buildPrTitle({ ctx, result, pr });
   const prBody = buildPrBody({
     incidentUrl: buildContextIncidentUrl(WEB_ORIGIN, ctx),
+    trigger: ctx.agentRun.trigger,
     result,
     pr,
   });
@@ -342,7 +370,7 @@ export async function completeWithPullRequest(
     input: {
       patch,
       branchName,
-      baseBranch: resolvePullRequestBaseBranch(ctx, pr),
+      baseBranch: legacyDeliveryIdentityBaseBranch(ctx, pr),
       title: prTitle,
       body: prBody,
     },
@@ -402,6 +430,7 @@ export async function completeWithPullRequest(
               repositoryId: repoMeta.id,
               repoFullName: pr.selectedRepoFullName,
               patch,
+              writePolicy: agentWritePolicy(ctx),
               branchName: existingPr.branchName,
               prNumber: existingPr.prNumber,
               commitTitle: prTitle,
@@ -572,6 +601,7 @@ export async function completeWithPullRequest(
       repositoryId: repoMeta.id,
       repoFullName: pr.selectedRepoFullName,
       patch,
+      writePolicy: agentWritePolicy(ctx),
       baseBranch: targetBaseBranch,
       existingBranch: null,
     });
@@ -601,6 +631,7 @@ export async function completeWithPullRequest(
           repositoryId: repoMeta.id,
           repoFullName: pr.selectedRepoFullName,
           patch,
+          writePolicy: agentWritePolicy(ctx),
           branchName,
           baseBranch: deliveryBaseBranch,
           title: prTitle,
@@ -1945,6 +1976,10 @@ export async function preflightProposedPullRequest(
           recovered,
         });
         pr.changedFiles = normalizedChangedFiles([...(pr.changedFiles ?? []), ...recoveredFiles]);
+        const refusedRecovered = refusedAgentChanges(recoveredFiles, agentWritePolicy(ctx));
+        if (refusedRecovered.length > 0) {
+          return { ok: false, error: agentWritePolicyError(refusedRecovered) };
+        }
         return { ok: true, prepared: { kind: "github_recovery" } };
       } catch (err) {
         logger.error(
@@ -1985,6 +2020,20 @@ export async function preflightProposedPullRequest(
     ...changedFilesFromUnifiedDiff(patch),
   ]);
   pr.changedFiles = changedFiles;
+  const writePolicy = agentWritePolicy(ctx);
+  const refused = refusedAgentChanges(changedFiles, writePolicy);
+  if (refused.length > 0) {
+    logger.info(
+      {
+        scope: "agent_run.pr_delivery.protected_paths_refused",
+        incident_id: ctx.incident.id,
+        repo_full_name: pr.repoFullName,
+        refused: refused.map((item) => item.category),
+      },
+      "agent patch touches protected paths",
+    );
+    return { ok: false, error: agentWritePolicyError(refused) };
+  }
   if (changedFiles.length === 0) {
     logger.info(
       {
@@ -2009,8 +2058,10 @@ export async function preflightProposedPullRequest(
       patch,
       baseBranch: targetBaseBranch,
       existingBranch: existingPr?.branchName ?? null,
+      writePolicy,
     });
   } catch (err) {
+    if (err instanceof AgentWritePolicyError) return { ok: false, error: err.message };
     return { ok: false, error: summarizePrOpenFailure(err) };
   }
   const deliveryBaseBranch = existingPr?.baseBranch ?? validatedBaseBranch;
@@ -2136,6 +2187,7 @@ export async function deliverProposedPullRequest(
   const prTitle = buildPrTitle({ ctx, result: { summary: pr.title }, pr });
   const prBody = buildPrBody({
     incidentUrl: buildContextIncidentUrl(WEB_ORIGIN, ctx),
+    trigger: ctx.agentRun.trigger,
     result: { summary: pr.body },
     pr,
   });
@@ -2176,6 +2228,7 @@ export async function deliverProposedPullRequest(
             repositoryId: repoMeta.id,
             repoFullName: pr.repoFullName,
             patch,
+            writePolicy: agentWritePolicy(ctx),
             branchName: existingPr.branchName,
             prNumber: existingPr.prNumber,
             commitTitle: prTitle,
@@ -2260,6 +2313,7 @@ export async function deliverProposedPullRequest(
         repositoryId: repoMeta.id,
         repoFullName: pr.repoFullName,
         patch,
+        writePolicy: agentWritePolicy(ctx),
         branchName: pr.branchName,
         baseBranch: deliveryBaseBranch,
         title: prTitle,
