@@ -56,18 +56,15 @@ test("the device store finds devices by either code", () => {
   assert.equal(store.byUserCode("USER-B"), undefined);
 });
 
-test("the device store drops devices an hour after they expire and refuses new ones when full", () => {
+test("a full device store drops expired devices and refuses new ones while all are live", () => {
   const store = createDeviceStore({ maxDevices: 2 });
   assert.equal(store.add(pendingDevice("A", 0), 0), true);
   assert.equal(store.add(pendingDevice("B", 0), 0), true);
   assert.equal(store.add(pendingDevice("C", 1_000), 1_000), false);
   assert.equal(store.size(), 2);
 
-  // Expired devices still answer as expired for an hour.
-  assert.equal(store.add(pendingDevice("D", 700_000), 700_000), false);
-  assert.equal(store.byDeviceCode("device-A")?.userCode, "USER-A");
-
-  assert.equal(store.add(pendingDevice("D", 4_300_000), 4_300_000), true);
+  // A full store makes room by dropping expired devices at once.
+  assert.equal(store.add(pendingDevice("D", 700_000), 700_000), true);
   assert.equal(store.byDeviceCode("device-A"), undefined);
   assert.equal(store.byUserCode("USER-B"), undefined);
   assert.equal(store.size(), 1);
@@ -81,6 +78,15 @@ test("the device store keeps a skill device through its integration window", () 
     integrationExpiresAt: 1_200_000,
   };
   store.add(device, 0);
-  assert.equal(store.add(pendingDevice("B", 3_000_000), 3_000_000), false);
+  assert.equal(store.add(pendingDevice("B", 700_000), 700_000), false);
   assert.equal(store.byUserCode("USER-A"), device);
+});
+
+test("the device store keeps expired devices for an hour while it has room", () => {
+  const store = createDeviceStore({ maxDevices: 10 });
+  store.add(pendingDevice("A", 0), 0);
+  store.add(pendingDevice("B", 700_000), 700_000);
+  assert.equal(store.byDeviceCode("device-A")?.userCode, "USER-A");
+  store.add(pendingDevice("C", 4_300_000), 4_300_000);
+  assert.equal(store.byDeviceCode("device-A"), undefined);
 });
