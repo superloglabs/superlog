@@ -18,10 +18,10 @@
     "@aws-sdk/client-s3": "^3.1053.0",
     "@aws-sdk/client-sts": "^3.1053.0",
     "@clickhouse/client": "^1.9.0",
-    "@hono/node-server": "^1.13.7",
+    "@hono/node-server": "^1.19.19",
     "@hono/standard-validator": "^0.2.2",
     "@jridgewell/trace-mapping": "^0.3.31",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/api-logs": "^0.220.0",
     "@opentelemetry/auto-instrumentations-node": "^0.78.0",
@@ -55,7 +55,7 @@
     "pg-boss": "^12.0.0",
     "pino": "^10.3.1",
     "resend": "^6.12.3",
-    "zod": "^4.4.3"
+    "zod": "^4.6.7"
   },
   "engines": {
     "node": ">=22.12.0"
