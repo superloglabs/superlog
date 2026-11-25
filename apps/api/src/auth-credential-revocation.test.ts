@@ -239,3 +239,16 @@ test("a session keeps working once the ban has expired", async () => {
 
   assert.equal((await auth.api.getSession({ headers: userSession.headers }))?.user.id, user.id);
 });
+
+test("other auth endpoints refuse a session once the user is banned outside Better Auth", async () => {
+  const user = await seedUser("sql-ban-org");
+  const userSession = await signIn(user.email);
+
+  await db.update(schema.users).set({ banned: true }).where(eq(schema.users.id, user.id));
+
+  await assert.rejects(
+    auth.api.listOrganizations({ headers: userSession.headers }),
+    (error: { status?: string }) => error.status === "UNAUTHORIZED",
+  );
+  assert.deepEqual(await sessionTokens(user.id), []);
+});

@@ -1,5 +1,5 @@
 import { db, isBanActive, revokeUserCredentials } from "@superlog/db";
-import { createAuthMiddleware, isAPIError } from "better-auth/api";
+import { APIError, createAuthMiddleware, getSessionFromCtx, isAPIError } from "better-auth/api";
 import { logger } from "./logger.js";
 
 // A password reset, password change, or ban ends the user's Better Auth
@@ -131,4 +131,17 @@ export const revokeCredentialsAfterPasswordChange = createAuthMiddleware(async (
   });
   if (!target) return;
   await revoke(target.reason, target.userId, target.keepSessionToken);
+});
+
+/**
+ * `hooks.before`: a banned user's session works for no Better Auth endpoint.
+ * /get-session answers null instead, in the after hook.
+ */
+export const refuseBannedSessions = createAuthMiddleware(async (ctx) => {
+  if (ctx.path === "/get-session") return;
+  const current = await getSessionFromCtx(ctx).catch(() => null);
+  const bannedUserId = bannedSessionUserId(current);
+  if (!bannedUserId) return;
+  await revoke("ban", bannedUserId);
+  throw new APIError("UNAUTHORIZED", { message: "This account is banned." });
 });

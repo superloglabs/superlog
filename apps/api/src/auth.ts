@@ -15,6 +15,7 @@ import { favoriteProjectToSeed, pickActiveOrgId as pickActiveOrgIdRule } from ".
 import { AUTH_CLIENT_IP_HEADER } from "./auth-client-ip.js";
 import { authCookieOptions, legacySharedCookieDomain } from "./auth-cookies.js";
 import {
+  refuseBannedSessions,
   revokeCredentialsAfterPasswordChange,
   revokeCredentialsIfBanned,
   revokeCredentialsOnPasswordReset,
@@ -245,7 +246,11 @@ export const auth = betterAuth({
     ...autumnPlugins,
   ],
   hooks: {
-    // /change-password and /admin/set-user-password, after they succeed.
+    // A banned user's session is refused everywhere, including bans written
+    // straight to the users table.
+    before: refuseBannedSessions,
+    // /get-session for banned users, and /change-password and
+    // /admin/set-user-password after they succeed.
     after: revokeCredentialsAfterPasswordChange,
   },
   databaseHooks: {
