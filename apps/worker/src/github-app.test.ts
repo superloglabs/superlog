@@ -756,3 +756,45 @@ test("applyAgentPatch allows dependency changes when the project allows them", a
     await rm(workdir, { recursive: true, force: true });
   }
 });
+
+test("applyAgentPatch refuses a submodule pointer update unless dependency changes are allowed", async () => {
+  const workdir = await mkdtemp(path.join(os.tmpdir(), "superlog-policy-test-"));
+  const repoDir = path.join(workdir, "repo");
+  try {
+    git(workdir, ["init", "-q", "repo"]);
+    git(repoDir, ["config", "user.email", "test@example.com"]);
+    git(repoDir, ["config", "user.name", "Test"]);
+    git(repoDir, ["config", "commit.gpgsign", "false"]);
+    const oldSha = "1111111111111111111111111111111111111111";
+    const newSha = "2222222222222222222222222222222222222222";
+    git(repoDir, ["update-index", "--add", "--cacheinfo", `160000,${oldSha},vendor/lib`]);
+    git(repoDir, ["commit", "-q", "-m", "base"]);
+    const patchPath = path.join(workdir, "superlog.patch");
+    await writeFile(
+      patchPath,
+      [
+        "diff --git a/vendor/lib b/vendor/lib",
+        "index 1111111..2222222 160000",
+        "--- a/vendor/lib",
+        "+++ b/vendor/lib",
+        "@@ -1 +1 @@",
+        `-Subproject commit ${oldSha}`,
+        `+Subproject commit ${newSha}`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await assert.rejects(
+      () => applyAgentPatch({ repoDir, patchPath, writePolicy: closedWritePolicy }),
+      (err: unknown) => {
+        assert.ok(err instanceof AgentWritePolicyError);
+        assert.deepEqual(err.refused, [{ path: "vendor/lib", category: "dependencies" }]);
+        return true;
+      },
+    );
+    git(repoDir, ["reset", "-q", "--hard", "HEAD"]);
+    await applyAgentPatch({ repoDir, patchPath, writePolicy: { allowDependencyChanges: true } });
+  } finally {
+    await rm(workdir, { recursive: true, force: true });
+  }
+});

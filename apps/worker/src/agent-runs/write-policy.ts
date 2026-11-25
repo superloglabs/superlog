@@ -36,6 +36,7 @@ const CI_FILE_NAMES = new Set([
 const CI_DIRECTORIES = new Set([".github", ".gitlab", ".circleci", ".buildkite", ".husky"]);
 
 const DEPENDENCY_FILE_NAMES = new Set([
+  ".gitmodules",
   "package.json",
   "package-lock.json",
   "npm-shrinkwrap.json",
@@ -129,13 +130,20 @@ export function protectedPathCategory(filePath: string): ProtectedPathCategory |
   return null;
 }
 
+// `submodulePaths` are changed paths whose old or new git mode is a gitlink:
+// moving a submodule pointer pulls in another repository's code, so it counts
+// as a dependency change whatever the path is called.
 export function refusedAgentChanges(
   paths: readonly string[],
   policy: AgentWritePolicy,
+  submodulePaths: readonly string[] = [],
 ): RefusedAgentChange[] {
+  const submodules = new Set(submodulePaths);
   const refused: RefusedAgentChange[] = [];
   for (const changedPath of paths) {
-    const category = protectedPathCategory(changedPath);
+    const category = submodules.has(changedPath)
+      ? "dependencies"
+      : protectedPathCategory(changedPath);
     if (!category) continue;
     if (category === "dependencies" && policy.allowDependencyChanges) continue;
     refused.push({ path: changedPath, category });
@@ -171,7 +179,8 @@ export class AgentWritePolicyError extends Error {
 export function assertAgentChangesAllowed(
   paths: readonly string[],
   policy: AgentWritePolicy,
+  submodulePaths: readonly string[] = [],
 ): void {
-  const refused = refusedAgentChanges(paths, policy);
+  const refused = refusedAgentChanges(paths, policy, submodulePaths);
   if (refused.length > 0) throw new AgentWritePolicyError(refused);
 }

@@ -68,6 +68,7 @@ test("dependency manifests and lockfiles are protected at any depth", () => {
     "mix.lock",
     "src/App/App.csproj",
     "packages.lock.json",
+    ".gitmodules",
   ]) {
     assert.equal(protectedPathCategory(path), "dependencies", path);
   }
@@ -132,4 +133,15 @@ test("the refusal names each file and tells the agent what to do instead", () =>
   assert.match(message, /\.github\/workflows\/ci\.yml/);
   assert.match(message, /leave .* out of the patch/i);
   assert.match(message, /pull request description/i);
+});
+
+test("submodule pointer changes count as dependency changes", () => {
+  assert.deepEqual(
+    refusedAgentChanges(["vendor/lib"], { allowDependencyChanges: false }, ["vendor/lib"]),
+    [{ path: "vendor/lib", category: "dependencies" }],
+  );
+  assert.deepEqual(
+    refusedAgentChanges(["vendor/lib"], { allowDependencyChanges: true }, ["vendor/lib"]),
+    [],
+  );
 });

@@ -972,10 +972,31 @@ export async function applyAgentPatch(opts: {
     const patchBody = await readFile(opts.patchPath, "utf8").catch(() => "");
     throw gitApplyError(applyArgs, result, patchBody);
   }
-  const staged = await ensureGitOk(["diff", "--cached", "--name-only", "--no-renames", "-z"], {
+  const staged = await ensureGitOk(["diff", "--cached", "--raw", "--no-renames", "-z"], {
     cwd: opts.repoDir,
   });
-  assertAgentChangesAllowed(staged.stdout.split("\0").filter(Boolean), opts.writePolicy);
+  const changes = parseStagedRawDiff(staged.stdout);
+  assertAgentChangesAllowed(
+    changes.map((change) => change.path),
+    opts.writePolicy,
+    changes.filter((change) => change.gitlink).map((change) => change.path),
+  );
+}
+
+// Parses `git diff --raw -z` output: ":<old mode> <new mode> <old sha>
+// <new sha> <status>\0<path>\0" per entry (renames are off). Mode 160000 is
+// a submodule gitlink.
+export function parseStagedRawDiff(output: string): Array<{ path: string; gitlink: boolean }> {
+  const fields = output.split("\0");
+  const changes: Array<{ path: string; gitlink: boolean }> = [];
+  for (let index = 0; index + 1 < fields.length; index += 2) {
+    const header = fields[index];
+    const changedPath = fields[index + 1];
+    if (!header?.startsWith(":") || !changedPath) continue;
+    const [oldMode, newMode] = header.slice(1).split(" ");
+    changes.push({ path: changedPath, gitlink: oldMode === "160000" || newMode === "160000" });
+  }
+  return changes;
 }
 
 async function cloneRepositoryAtBaseBranch(opts: {
