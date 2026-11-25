@@ -1,6 +1,7 @@
 import type { Env, Hono, MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
+import { rejectDotSegments } from "./request-target.js";
 
 export const DEFAULT_API_BODY_BYTES = 2 * 1024 * 1024;
 export const MCP_RELAY_BODY_BYTES = 8 * 1024 * 1024;
@@ -32,6 +33,7 @@ export function mountApiRequestSecurity<E extends Env>(
   app: Hono<E>,
   allowedOrigins: string[],
 ): void {
+  app.use("*", rejectDotSegments);
   app.use(
     "/api/*",
     cors({
