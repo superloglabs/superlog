@@ -45,7 +45,7 @@
     "@superlog/render": "workspace:*",
     "@superlog/telemetry-query": "workspace:*",
     "autumn-js": "^1.2.27",
-    "better-auth": "~1.6.31",
+    "better-auth": "~1.7.28",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "google-auth-library": "^10.9.0",
