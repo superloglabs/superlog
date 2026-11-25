@@ -278,6 +278,8 @@ test("streams the relayed request through relayFetch and refreshes tokens throug
   });
 
   assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "text/event-stream");
+  assert.equal(await response.text(), "event: message\ndata: {}\n\n");
   assert.deepEqual(streamed, ["mcp.sentry.dev"]);
   assert.equal(buffered.length, 1);
   assert.notEqual(buffered[0], "mcp.sentry.dev");
