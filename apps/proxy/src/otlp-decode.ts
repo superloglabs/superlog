@@ -4,6 +4,7 @@ import { gunzip, inflate } from "node:zlib";
 import protobuf from "protobufjs";
 
 import { PayloadTooLargeError } from "./body-capture.js";
+import { assertDecodableSize, parseBoundedJson } from "./bounded-json.js";
 import {
   type OtelLogRow,
   type OtelTraceRow,
@@ -101,15 +102,18 @@ export async function decodeOtlpToRows(input: DecodeInput): Promise<DecodedRows 
     input.maxDecompressedBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES,
   );
 
+  // JSON parses into far more memory than protobuf for the same bytes.
+  if (json) assertDecodableSize(body);
+
   if (input.path === "/v1/logs") {
     const payload = json
-      ? JSON.parse(body.toString("utf8"))
+      ? parseBoundedJson(body.toString("utf8"))
       : decodeProto(ExportLogsServiceRequest, body);
     return { table: "otel_logs", rows: otlpLogsToRows(payload, input.projectId) };
   }
 
   const payload = json
-    ? JSON.parse(body.toString("utf8"))
+    ? parseBoundedJson(body.toString("utf8"))
     : decodeProto(ExportTraceServiceRequest, body);
   return { table: "otel_traces", rows: otlpTracesToRows(payload, input.projectId) };
 }
@@ -131,7 +135,8 @@ export async function decodeOtlpMetricsPayload(input: {
     input.maxDecompressedBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES,
   );
   if (input.contentType.toLowerCase().includes("json")) {
-    return JSON.parse(body.toString("utf8"));
+    assertDecodableSize(body);
+    return parseBoundedJson(body.toString("utf8"));
   }
   return decodeProto(ExportMetricsServiceRequest, body);
 }

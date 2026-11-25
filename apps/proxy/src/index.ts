@@ -17,11 +17,8 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { createIngestEntitlementGate, signalForPath } from "./billing/ingest-entitlement.js";
-import {
-  EmptyBodyError,
-  PayloadTooLargeError,
-  assertBodyWithinLimit,
-} from "./body-capture.js";
+import { EmptyBodyError, PayloadTooLargeError, assertBodyWithinLimit } from "./body-capture.js";
+import { DecodeLimitError } from "./bounded-json.js";
 import { ClickHouseIngestWriter, getIngestClickHouseConfig } from "./clickhouse-writer.js";
 import { EMPTY_BODY_ERROR_MESSAGE, isDeclaredEmptyBody } from "./empty-body-guard.js";
 import {
@@ -651,6 +648,14 @@ function handleIngestBodyError(
       status: 413,
       response: c.json({ error: `request body exceeds the ${err.limitBytes}-byte limit` }, 413),
     };
+  }
+  if (err instanceof DecodeLimitError) {
+    span.setAttribute("ingest.too_large", true);
+    logger.warn(
+      { path, projectId, reason: err.message },
+      "rejecting OTLP body past the decode limits",
+    );
+    return { status: 413, response: c.json({ error: err.message }, 413) };
   }
   if (err instanceof EmptyBodyError) {
     span.setAttribute("ingest.empty_body", true);

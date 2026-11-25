@@ -86,3 +86,17 @@ test("register endpoint accepts a native-app private-use scheme past redirect va
   const body = (await res.json()) as { error: string };
   assert.equal(body.error, "invalid_redirect_uri");
 });
+
+test("registration refuses more than 10 redirect URIs or a very long one", async () => {
+  const app = await mountRegister();
+  const register = (redirect_uris: string[]) =>
+    app.request("/oauth/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ redirect_uris }),
+    });
+
+  const many = Array.from({ length: 11 }, (_, i) => `https://example.com/callback/${i}`);
+  assert.equal((await register(many)).status, 400);
+  assert.equal((await register([`https://example.com/${"a".repeat(2_100)}`])).status, 400);
+});

@@ -53,3 +53,52 @@ export function isDeviceExpired(device: Device, now: number): boolean {
 export function isDeviceIntegrationExpired(device: Device, now: number): boolean {
   return now > (device.integrationExpiresAt ?? device.expiresAt);
 }
+
+// Devices waiting for approval, kept in this process. Anyone can start a
+// device flow, so the store drops devices an hour after their last deadline,
+// or at once when it is full, and refuses new ones while it is full of live
+// devices.
+export const MAX_DEVICES = 10_000;
+// Expired devices are kept this long past their last deadline, while there is
+// room, so a late poll or activation still gets the expired answer.
+export const EXPIRED_DEVICE_GRACE_MS = 60 * 60 * 1000;
+
+export type DeviceStore = ReturnType<typeof createDeviceStore>;
+
+export function createDeviceStore({ maxDevices = MAX_DEVICES }: { maxDevices?: number } = {}) {
+  const byDeviceCode = new Map<string, Device>();
+  const byUserCode = new Map<string, Device>();
+  let nextSweepAt = 0;
+
+  function sweep(now: number, graceMs: number): void {
+    for (const [deviceCode, device] of byDeviceCode) {
+      if (!isDeviceIntegrationExpired(device, now - graceMs)) continue;
+      byDeviceCode.delete(deviceCode);
+      if (byUserCode.get(device.userCode) === device) byUserCode.delete(device.userCode);
+    }
+    nextSweepAt = now + 60_000;
+  }
+
+  return {
+    // False when the store is full of devices that have not expired.
+    add(device: Device, now: number): boolean {
+      if (now >= nextSweepAt || byDeviceCode.size >= maxDevices)
+        sweep(now, EXPIRED_DEVICE_GRACE_MS);
+      // Expired devices keep their place only while there is room.
+      if (byDeviceCode.size >= maxDevices) sweep(now, 0);
+      if (byDeviceCode.size >= maxDevices) return false;
+      byDeviceCode.set(device.deviceCode, device);
+      byUserCode.set(device.userCode, device);
+      return true;
+    },
+    byDeviceCode(deviceCode: string): Device | undefined {
+      return byDeviceCode.get(deviceCode);
+    },
+    byUserCode(userCode: string): Device | undefined {
+      return byUserCode.get(userCode);
+    },
+    size(): number {
+      return byDeviceCode.size;
+    },
+  };
+}

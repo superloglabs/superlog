@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 
+import { DecodeLimitError } from "./bounded-json.js";
 import { stampIssueFingerprints } from "./ingest-fingerprints.js";
 import { otlpLogsToRows } from "./otlp-clickhouse.js";
 import {
@@ -141,4 +142,20 @@ test("Vercel runtime request envelopes receive stable fingerprints through OTLP"
   assert.equal(typeof fingerprints[0], "string");
   assert.equal(typeof fingerprints[1], "string");
   assert.equal(fingerprints[0], fingerprints[1]);
+});
+
+test("blank lines between NDJSON records are skipped", () => {
+  const body = Buffer.from(`{"message":"a"}${"\n".repeat(100_000)}{"message":"b"}\r\n`);
+  assert.equal(parseVercelLogDrainBody(body, "application/x-ndjson").length, 2);
+});
+
+test("a Vercel drain body with too many objects is refused", () => {
+  assert.throws(
+    () => parseVercelLogDrainBody(Buffer.from("{}\n".repeat(300_000)), "application/x-ndjson"),
+    DecodeLimitError,
+  );
+  assert.throws(
+    () => parseVercelLogDrainBody(Buffer.from(`[${"{},".repeat(300_000)}{}]`), "application/json"),
+    DecodeLimitError,
+  );
 });
