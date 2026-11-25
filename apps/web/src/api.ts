@@ -1981,6 +1981,7 @@ export type AgentSettings = {
   linearDefaultTeamId: string | null;
   autoResolveStaleIncidentsEnabled: boolean;
   prBaseBranch: string | null;
+  agentDependencyChangesEnabled: boolean;
   autoMergeFixPrs: AutoMergePolicy;
   autoMergeMethod: AutoMergeMethod;
   issueFilterConfig: IssueFilterConfig;

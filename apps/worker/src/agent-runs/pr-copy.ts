@@ -1,3 +1,7 @@
+import type { schema } from "@superlog/db";
+
+type AgentRunTrigger = schema.AgentRunTrigger;
+
 type PrCopyContext = {
   incident: { id: string; title: string };
 };
@@ -32,8 +36,23 @@ export function buildPrTitle(opts: {
   return buildLegacyPrReceiptTitle(opts.ctx.incident.title);
 }
 
+// Investigations a workspace member started on purpose. Every other run began
+// from telemetry or an alert, and its input includes text that people outside
+// the team can influence (error messages, log lines, alert payloads).
+const MEMBER_STARTED_TRIGGERS: ReadonlySet<AgentRunTrigger> = new Set([
+  "manual",
+  "linear",
+  "web_chat",
+]);
+
+export const AUTOMATIC_INVESTIGATION_PR_NOTE = [
+  "> [!NOTE]",
+  "> Superlog wrote this change during an automatic investigation. Its input included error messages, logs, and alerts that people outside your team can influence. Review it as you would a change from an outside contributor.",
+].join("\n");
+
 export function buildPrBody(opts: {
   incidentUrl: string;
+  trigger: AgentRunTrigger;
   result: PrCopyResult;
   pr: PrCopyPr;
 }): string {
@@ -47,7 +66,9 @@ export function buildPrBody(opts: {
       "",
       `[Incident on Superlog](${opts.incidentUrl})`,
     ].join("\n");
-  return withLinearReference(base, opts.result.linearTicket);
+  const body = withLinearReference(base, opts.result.linearTicket);
+  if (MEMBER_STARTED_TRIGGERS.has(opts.trigger)) return body;
+  return `${body}\n\n${AUTOMATIC_INVESTIGATION_PR_NOTE}`;
 }
 
 // Deterministically stitch the filed Linear ticket into the PR body so the

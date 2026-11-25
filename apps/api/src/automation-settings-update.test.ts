@@ -29,6 +29,7 @@ function values(
     linearDefaultTeamId: null,
     autoResolveStaleIncidentsEnabled: true,
     prBaseBranch: null,
+    agentDependencyChangesEnabled: false,
     autoMergeFixPrs: "never",
     autoMergeMethod: "squash",
     issueFilterConfig: {},
@@ -104,4 +105,19 @@ test("linearDefaultTeamExists matches by id and accepts the workspace fallback",
   assert.equal(linearDefaultTeamExists("ENGG", teams), false);
   assert.equal(linearDefaultTeamExists("team-missing", teams), false);
   assert.equal(linearDefaultTeamExists(null, teams), true);
+});
+
+test("an agent dependency changes PATCH writes only that setting", () => {
+  assert.deepEqual(
+    buildAutomationSettingsConflictUpdate(
+      { agentDependencyChangesEnabled: true },
+      values({ agentDependencyChangesEnabled: true }),
+      NOW,
+    ),
+    { agentDependencyChangesEnabled: true, updatedAt: NOW },
+  );
+  assert.deepEqual(
+    buildAutomationSettingsConflictUpdate({ agentDependencyChangesEnabled: "yes" }, values(), NOW),
+    { updatedAt: NOW },
+  );
 });

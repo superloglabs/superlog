@@ -226,7 +226,8 @@ const PULL_REQUEST_PROPERTIES = {
   },
   baseBranch: {
     type: "string",
-    description: "The branch the PR should target (the repo's active development branch).",
+    description:
+      "The branch your patch was made against. The PR always targets the project's configured base branch, or the repository default branch when none is configured.",
   },
   patchFilePath: {
     type: "string",
@@ -263,7 +264,7 @@ const PULL_REQUEST_REQUIRED = [
 const PROPOSE_PR_DEFINITION: OutcomeToolDefinition = {
   name: "propose_pr",
   description:
-    "Terminal for this turn: open or update one validated PR per repository, then wait for review. Pass a non-empty pullRequests array; every repository and patchFilePath must be unique. Each patch must be a unified diff under /mnt/session/outputs/ that changes only its repository. A new branchName opens a PR; reusing the same repository and branchName pushes a follow-up commit. If validation or delivery fails, the call is rejected and the turn stays active so you can retry only failed entries. NOT for noise: a patch that only quiets a signal is the wrong outcome. Do not call resolve_incident in the same turn; the incident stays open until the PR lifecycle resumes the session.",
+    "Terminal for this turn: open or update one validated PR per repository, then wait for review. Pass a non-empty pullRequests array; every repository and patchFilePath must be unique. Each patch must be a unified diff under /mnt/session/outputs/ that changes only its repository. Patches may not change CI or automation config (for example .github/, .gitlab-ci.yml), agent instruction files (AGENTS.md, CLAUDE.md, .cursor/, .claude/), or dependency manifests and lockfiles unless the project allows dependency changes; describe any change those files need in the PR body for a person to make. A new branchName opens a PR; reusing the same repository and branchName pushes a follow-up commit. If validation or delivery fails, the call is rejected and the turn stays active so you can retry only failed entries. NOT for noise: a patch that only quiets a signal is the wrong outcome. Do not call resolve_incident in the same turn; the incident stays open until the PR lifecycle resumes the session.",
   input_schema: {
     type: "object",
     properties: {

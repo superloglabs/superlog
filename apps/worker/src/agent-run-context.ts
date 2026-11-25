@@ -64,6 +64,7 @@ export type AgentRunContext = {
   approvalPromptsEnabled: boolean;
   createLinearTicketOnResolve: boolean;
   prBaseBranch: string | null;
+  agentDependencyChangesEnabled: boolean;
   autoMergeFixPrs: schema.AutoMergePolicy;
   autoMergeMethod: schema.AutoMergeMethod;
   issueRows: Array<schema.Issue>;
@@ -183,6 +184,7 @@ export async function getProjectAutomation(projectId: string): Promise<{
   approvalPromptsEnabled: boolean;
   createLinearTicketOnResolve: boolean;
   prBaseBranch: string | null;
+  agentDependencyChangesEnabled: boolean;
   autoMergeFixPrs: schema.AutoMergePolicy;
   autoMergeMethod: schema.AutoMergeMethod;
   issueFilterConfig: schema.IssueFilterConfig;
@@ -204,6 +206,7 @@ export async function getProjectAutomation(projectId: string): Promise<{
     approvalPromptsEnabled: row?.approvalPromptsEnabled ?? true,
     createLinearTicketOnResolve: row?.createLinearTicketOnResolve ?? false,
     prBaseBranch: schema.normalizePrBaseBranch(row?.prBaseBranch),
+    agentDependencyChangesEnabled: row?.agentDependencyChangesEnabled ?? false,
     autoMergeFixPrs: row?.autoMergeFixPrs ?? "never",
     autoMergeMethod: row?.autoMergeMethod ?? "squash",
     issueFilterConfig: row?.issueFilterConfig ?? schema.EMPTY_ISSUE_FILTER_CONFIG,
@@ -301,6 +304,7 @@ export async function loadAgentRunContext(
     approvalPromptsEnabled: automation.approvalPromptsEnabled,
     createLinearTicketOnResolve: automation.createLinearTicketOnResolve,
     prBaseBranch: automation.prBaseBranch,
+    agentDependencyChangesEnabled: automation.agentDependencyChangesEnabled,
     autoMergeFixPrs: automation.autoMergeFixPrs,
     autoMergeMethod: automation.autoMergeMethod,
     issueRows,

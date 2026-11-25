@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { type AgentWritePolicy, AgentWritePolicyError } from "./agent-runs/write-policy.js";
 import {
   type GithubDirEntry,
   GithubInstallationTokenGate,
@@ -29,6 +30,8 @@ import {
   redactGitSecrets,
   reopenGithubPullRequestWithToken,
 } from "./github-app.js";
+
+const closedWritePolicy: AgentWritePolicy = { allowDependencyChanges: false };
 
 test("changed-file page-cap metrics use bounded attributes", () => {
   const observations: Array<{ value: number; attributes?: Record<string, string> }> = [];
@@ -614,7 +617,7 @@ test("applyAgentPatch 3-way-merges a patch whose context line drifted upstream",
     assert.notEqual(plain.status, 0, "plain git apply should fail on context drift");
 
     // applyAgentPatch (--3way) merges the non-overlapping change in.
-    await applyAgentPatch({ repoDir, patchPath });
+    await applyAgentPatch({ repoDir, patchPath, writePolicy: closedWritePolicy });
 
     const result = await readFile(path.join(repoDir, "file.txt"), "utf8");
     assert.match(result, /line 10 — AGENT CHANGE/, "agent change must land");
@@ -653,7 +656,102 @@ test("applyAgentPatch throws on a genuinely conflicting patch", async () => {
     const patchPath = path.join(workdir, "superlog.patch");
     await writeFile(patchPath, patchBody, "utf8");
 
-    await assert.rejects(() => applyAgentPatch({ repoDir, patchPath }));
+    await assert.rejects(() =>
+      applyAgentPatch({ repoDir, patchPath, writePolicy: closedWritePolicy }),
+    );
+  } finally {
+    await rm(workdir, { recursive: true, force: true });
+  }
+});
+
+// --- applyAgentPatch: protected paths ----------------------------------------
+//
+// The check runs on what git actually staged, so renames, deletions and paths
+// that only appear after git resolves the patch are all covered.
+
+async function buildRepoWithPatch(
+  files: Record<string, string>,
+  edit: (repoDir: string) => void | Promise<void>,
+): Promise<{ workdir: string; repoDir: string; patchPath: string }> {
+  const workdir = await mkdtemp(path.join(os.tmpdir(), "superlog-policy-test-"));
+  const repoDir = path.join(workdir, "repo");
+  git(workdir, ["init", "-q", "repo"]);
+  git(repoDir, ["config", "user.email", "test@example.com"]);
+  git(repoDir, ["config", "user.name", "Test"]);
+  git(repoDir, ["config", "commit.gpgsign", "false"]);
+  for (const [name, content] of Object.entries(files)) {
+    spawnSync("mkdir", ["-p", path.dirname(path.join(repoDir, name))]);
+    await writeFile(path.join(repoDir, name), content, "utf8");
+  }
+  git(repoDir, ["add", "-A"]);
+  git(repoDir, ["commit", "-q", "-m", "base"]);
+  await edit(repoDir);
+  git(repoDir, ["add", "-A"]);
+  const patchBody = git(repoDir, ["diff", "--cached", "-M"]);
+  git(repoDir, ["reset", "-q", "--hard", "HEAD"]);
+  const patchPath = path.join(workdir, "superlog.patch");
+  await writeFile(patchPath, patchBody, "utf8");
+  return { workdir, repoDir, patchPath };
+}
+
+test("applyAgentPatch refuses a patch that changes CI config or dependencies", async () => {
+  const { workdir, repoDir, patchPath } = await buildRepoWithPatch(
+    { "src/app.ts": "export const a = 1;\n", "package.json": "{}\n" },
+    async (dir) => {
+      await writeFile(path.join(dir, "src/app.ts"), "export const a = 2;\n", "utf8");
+      await writeFile(path.join(dir, "package.json"), '{"scripts":{"test":"x"}}\n', "utf8");
+      spawnSync("mkdir", ["-p", path.join(dir, ".github/actions/setup")]);
+      await writeFile(path.join(dir, ".github/actions/setup/action.yml"), "runs: {}\n", "utf8");
+    },
+  );
+  try {
+    await assert.rejects(
+      () => applyAgentPatch({ repoDir, patchPath, writePolicy: closedWritePolicy }),
+      (err: unknown) => {
+        assert.ok(err instanceof AgentWritePolicyError);
+        assert.deepEqual(err.refused.map((item) => item.path).sort(), [
+          ".github/actions/setup/action.yml",
+          "package.json",
+        ]);
+        return true;
+      },
+    );
+  } finally {
+    await rm(workdir, { recursive: true, force: true });
+  }
+});
+
+test("applyAgentPatch refuses renaming an agent instruction file away", async () => {
+  const { workdir, repoDir, patchPath } = await buildRepoWithPatch(
+    { "AGENTS.md": "Follow the style guide.\n" },
+    (dir) => {
+      git(dir, ["mv", "AGENTS.md", "notes.md"]);
+    },
+  );
+  try {
+    await assert.rejects(
+      () => applyAgentPatch({ repoDir, patchPath, writePolicy: closedWritePolicy }),
+      AgentWritePolicyError,
+    );
+  } finally {
+    await rm(workdir, { recursive: true, force: true });
+  }
+});
+
+test("applyAgentPatch allows dependency changes when the project allows them", async () => {
+  const { workdir, repoDir, patchPath } = await buildRepoWithPatch(
+    { "package.json": "{}\n" },
+    async (dir) => {
+      await writeFile(path.join(dir, "package.json"), '{"name":"x"}\n', "utf8");
+    },
+  );
+  try {
+    await applyAgentPatch({
+      repoDir,
+      patchPath,
+      writePolicy: { allowDependencyChanges: true },
+    });
+    assert.equal(git(repoDir, ["diff", "--cached", "--name-only"]).trim(), "package.json");
   } finally {
     await rm(workdir, { recursive: true, force: true });
   }

@@ -711,6 +711,7 @@ function makeContext(opts: { githubInstalled?: boolean } = {}): AgentRunContext 
     approvalPromptsEnabled: true,
     createLinearTicketOnResolve: false,
     prBaseBranch: "development",
+    agentDependencyChangesEnabled: false,
     autoMergeFixPrs: "never",
     autoMergeMethod: "squash",
     issueRows: [],

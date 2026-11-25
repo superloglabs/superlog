@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildPrBody, buildPrTitle } from "./pr-copy.js";
+import { AUTOMATIC_INVESTIGATION_PR_NOTE, buildPrBody, buildPrTitle } from "./pr-copy.js";
 
 test("buildPrTitle preserves an explicit PR title with repository conventions", () => {
   const title = buildPrTitle({
@@ -28,6 +28,7 @@ test("buildPrTitle falls back to proposedTitle without adding Fix to the inciden
 test("buildPrBody fallback only includes summary and incident link", () => {
   const body = buildPrBody({
     incidentUrl: "https://superlog.sh/incidents/inc-1",
+    trigger: "manual",
     result: { summary: "Users get an Unauthorized error." },
     pr: {},
   });
@@ -50,6 +51,7 @@ test("buildPrBody fallback only includes summary and incident link", () => {
 test("buildPrBody falls back to the generated summary for a whitespace-only body", () => {
   const body = buildPrBody({
     incidentUrl: "https://superlog.sh/incidents/inc-1",
+    trigger: "manual",
     result: { summary: "Users get an Unauthorized error." },
     pr: { body: "   \n  " },
   });
@@ -69,6 +71,7 @@ test("buildPrBody falls back to the generated summary for a whitespace-only body
 test("buildPrBody appends a linked Linear reference when the run filed a ticket", () => {
   const body = buildPrBody({
     incidentUrl: "https://superlog.sh/incidents/inc-1",
+    trigger: "manual",
     result: {
       summary: "Users get an Unauthorized error.",
       linearTicket: { id: "ENG-123", url: "https://linear.app/acme/issue/ENG-123" },
@@ -83,6 +86,7 @@ test("buildPrBody appends a linked Linear reference when the run filed a ticket"
 test("buildPrBody falls back to a bare Linear id when the ticket has no URL", () => {
   const body = buildPrBody({
     incidentUrl: "https://superlog.sh/incidents/inc-1",
+    trigger: "manual",
     result: {
       summary: "Users get an Unauthorized error.",
       linearTicket: { id: "ENG-123", url: null },
@@ -97,6 +101,7 @@ test("buildPrBody falls back to a bare Linear id when the ticket has no URL", ()
 test("buildPrBody does not duplicate a Linear reference the agent already wrote", () => {
   const body = buildPrBody({
     incidentUrl: "https://superlog.sh/incidents/inc-1",
+    trigger: "manual",
     result: {
       summary: "summary",
       linearTicket: { id: "ENG-123", url: "https://linear.app/acme/issue/ENG-123" },
@@ -105,4 +110,29 @@ test("buildPrBody does not duplicate a Linear reference the agent already wrote"
   });
 
   assert.equal(body, "# Summary\n\nAlready tracked in ENG-123.");
+});
+
+test("PRs from automatic investigations tell the reviewer the input was external", () => {
+  for (const trigger of ["incident", "pr_comment", "slack_reply", "slack_open_pr"] as const) {
+    const body = buildPrBody({
+      incidentUrl: "https://superlog.sh/incidents/inc-1",
+      trigger,
+      result: { summary: "Users get an Unauthorized error." },
+      pr: { body: "Fix the auth check." },
+    });
+    assert.ok(body.startsWith("Fix the auth check."), trigger);
+    assert.ok(body.endsWith(AUTOMATIC_INVESTIGATION_PR_NOTE), trigger);
+  }
+});
+
+test("PRs from investigations a member started carry no external-input note", () => {
+  for (const trigger of ["manual", "linear", "web_chat"] as const) {
+    const body = buildPrBody({
+      incidentUrl: "https://superlog.sh/incidents/inc-1",
+      trigger,
+      result: { summary: "summary" },
+      pr: { body: "Fix the auth check." },
+    });
+    assert.equal(body, "Fix the auth check.", trigger);
+  }
 });

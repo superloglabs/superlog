@@ -1517,6 +1517,7 @@ async function getProjectAutomation(projectId: string): Promise<{
   linearDefaultTeamId: string | null;
   autoResolveStaleIncidentsEnabled: boolean;
   prBaseBranch: string | null;
+  agentDependencyChangesEnabled: boolean;
   autoMergeFixPrs: schema.AutoMergePolicy;
   autoMergeMethod: schema.AutoMergeMethod;
   issueFilterConfig: schema.IssueFilterConfig;
@@ -1540,6 +1541,7 @@ async function getProjectAutomation(projectId: string): Promise<{
     linearDefaultTeamId: row?.linearDefaultTeamId ?? null,
     autoResolveStaleIncidentsEnabled: row?.autoResolveStaleIncidentsEnabled ?? true,
     prBaseBranch: schema.normalizePrBaseBranch(row?.prBaseBranch),
+    agentDependencyChangesEnabled: row?.agentDependencyChangesEnabled ?? false,
     autoMergeFixPrs: row?.autoMergeFixPrs ?? "never",
     autoMergeMethod: row?.autoMergeMethod ?? "squash",
     issueFilterConfig: row?.issueFilterConfig ?? schema.EMPTY_ISSUE_FILTER_CONFIG,
@@ -2173,6 +2175,7 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     linearDefaultTeamId?: unknown;
     autoResolveStaleIncidentsEnabled?: unknown;
     prBaseBranch?: unknown;
+    agentDependencyChangesEnabled?: unknown;
     autoMergeFixPrs?: unknown;
     autoMergeMethod?: unknown;
     issueFilterConfig?: unknown;
@@ -2250,6 +2253,10 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
       ? body.autoResolveStaleIncidentsEnabled
       : current.autoResolveStaleIncidentsEnabled;
   const prBaseBranch = parsePrBaseBranch(body.prBaseBranch, current.prBaseBranch);
+  const agentDependencyChangesEnabled =
+    typeof body.agentDependencyChangesEnabled === "boolean"
+      ? body.agentDependencyChangesEnabled
+      : current.agentDependencyChangesEnabled;
   const autoMergeFixPrs: schema.AutoMergePolicy =
     typeof body.autoMergeFixPrs === "string" && VALID_AUTO_MERGE_POLICIES.has(body.autoMergeFixPrs)
       ? (body.autoMergeFixPrs as schema.AutoMergePolicy)
@@ -2328,6 +2335,7 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     linearDefaultTeamId,
     autoResolveStaleIncidentsEnabled,
     prBaseBranch,
+    agentDependencyChangesEnabled,
     autoMergeFixPrs,
     autoMergeMethod,
     issueFilterConfig,

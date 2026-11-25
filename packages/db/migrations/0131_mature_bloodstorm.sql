@@ -1,0 +1,1 @@
+ALTER TABLE "project_automation_settings" ADD COLUMN "agent_dependency_changes_enabled" boolean DEFAULT false NOT NULL;
