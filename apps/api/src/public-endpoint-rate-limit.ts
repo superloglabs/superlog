@@ -27,8 +27,12 @@ export function publicEndpointRateLimit(
     });
     if (!decision.allowed) {
       const retryAfter = String(decision.retryAfterSeconds ?? Math.ceil(limit.windowMs / 1000));
+      // The OAuth error shape, which these endpoints' other errors use.
       return c.json(
-        { error: "too_many_requests", message: "Too many requests. Please try again later." },
+        {
+          error: "too_many_requests",
+          error_description: "Too many requests. Please try again later.",
+        },
         429,
         {
           "retry-after": retryAfter,

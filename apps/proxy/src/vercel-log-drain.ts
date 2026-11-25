@@ -68,11 +68,17 @@ export function parseVercelLogDrainBody(body: Buffer, contentType: string): Verc
   const lower = contentType.toLowerCase();
   if (lower.includes("ndjson") || lower.includes("x-ndjson")) {
     assertJsonContainers(text);
-    return text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => coerceRecord(JSON.parse(line)));
+    // Lines are read one at a time, so blank lines take no memory.
+    const records: VercelLogRecord[] = [];
+    let start = 0;
+    while (start <= text.length) {
+      const newline = text.indexOf("\n", start);
+      const end = newline === -1 ? text.length : newline;
+      const line = text.slice(start, end).trim();
+      if (line) records.push(coerceRecord(JSON.parse(line)));
+      start = end + 1;
+    }
+    return records;
   }
   const parsed = parseBoundedJson(text);
   if (Array.isArray(parsed)) return parsed.map(coerceRecord);

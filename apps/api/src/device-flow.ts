@@ -55,9 +55,12 @@ export function isDeviceIntegrationExpired(device: Device, now: number): boolean
 }
 
 // Devices waiting for approval, kept in this process. Anyone can start a
-// device flow, so the store drops devices once their last deadline passes and
-// refuses new ones while it is full of live devices.
+// device flow, so the store drops devices an hour after their last deadline
+// and refuses new ones while it is full.
 export const MAX_DEVICES = 10_000;
+// Expired devices are kept this long past their last deadline, so a late
+// poll or activation still gets the expired answer.
+export const EXPIRED_DEVICE_GRACE_MS = 60 * 60 * 1000;
 
 export type DeviceStore = ReturnType<typeof createDeviceStore>;
 
@@ -68,7 +71,7 @@ export function createDeviceStore({ maxDevices = MAX_DEVICES }: { maxDevices?: n
 
   function sweep(now: number): void {
     for (const [deviceCode, device] of byDeviceCode) {
-      if (!isDeviceIntegrationExpired(device, now)) continue;
+      if (!isDeviceIntegrationExpired(device, now - EXPIRED_DEVICE_GRACE_MS)) continue;
       byDeviceCode.delete(deviceCode);
       if (byUserCode.get(device.userCode) === device) byUserCode.delete(device.userCode);
     }
@@ -76,7 +79,7 @@ export function createDeviceStore({ maxDevices = MAX_DEVICES }: { maxDevices?: n
   }
 
   return {
-    // False when the store is full of devices that have not expired.
+    // False when the store is full of devices it still keeps.
     add(device: Device, now: number): boolean {
       if (now >= nextSweepAt || byDeviceCode.size >= maxDevices) sweep(now);
       if (byDeviceCode.size >= maxDevices) return false;

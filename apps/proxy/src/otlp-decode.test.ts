@@ -161,7 +161,7 @@ test("decoding refuses a JSON body with too many objects", async () => {
   );
 });
 
-test("decoding JSON bodies is limited to 16 MiB after decompression", async () => {
+test("decoding JSON bodies, not protobuf ones, is limited to 16 MiB after decompression", async () => {
   const body = gzipSync(
     Buffer.from(JSON.stringify({ resourceLogs: [], pad: "x".repeat(17 * 1024 * 1024) })),
   );

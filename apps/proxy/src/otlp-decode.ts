@@ -102,7 +102,8 @@ export async function decodeOtlpToRows(input: DecodeInput): Promise<DecodedRows 
     input.maxDecompressedBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES,
   );
 
-  assertDecodableSize(body);
+  // JSON parses into far more memory than protobuf for the same bytes.
+  if (json) assertDecodableSize(body);
 
   if (input.path === "/v1/logs") {
     const payload = json
@@ -133,8 +134,8 @@ export async function decodeOtlpMetricsPayload(input: {
     input.contentEncoding,
     input.maxDecompressedBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES,
   );
-  assertDecodableSize(body);
   if (input.contentType.toLowerCase().includes("json")) {
+    assertDecodableSize(body);
     return parseBoundedJson(body.toString("utf8"));
   }
   return decodeProto(ExportMetricsServiceRequest, body);
