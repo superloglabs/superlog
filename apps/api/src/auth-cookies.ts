@@ -8,12 +8,11 @@ import type { MiddlewareHandler } from "hono";
 // cookies because web and API are same-site.
 //
 // Earlier builds scoped these cookies to the parent domain shared by web and
-// API (`Domain=.<parent>`), so every sibling host received them.
-// `legacyAuthCookieMigration` moves those cookies to the host-only names on
-// the next request and expires the parent-domain copies.
+// API (`Domain=.<parent>`), so every sibling host received them. Those cookies
+// are not read any more; `expireLegacyAuthCookies` deletes them from browsers
+// that still send them.
 
 export const AUTH_COOKIE_PREFIX = "superlog";
-const HOST_PREFIX = `__Host-${AUTH_COOKIE_PREFIX}.`;
 const LEGACY_PREFIX = "__Secure-better-auth.";
 
 export type AuthCookieOptions =
@@ -65,107 +64,33 @@ export function legacySharedCookieDomain(apiOrigin: string, webOrigin: string): 
   }
 }
 
-export type LegacyCookieMigrationOptions = {
-  legacyDomain: string | undefined;
-  sessionMaxAgeSeconds: number;
-  // Legacy cookies are copied to the host-only names only before this time.
-  // Any sibling host can still set a parent-domain cookie, so after the move
-  // they are only expired; otherwise a planted cookie could become a session.
-  copyUntil: Date | null;
-};
-
-export function legacyCookieCopyDeadline(value: string | undefined): Date | null {
-  if (!value) return null;
-  const deadline = new Date(value);
-  // A typo would otherwise silently sign out everyone on old cookies.
-  if (Number.isNaN(deadline.getTime())) {
-    throw new Error(`AUTH_LEGACY_COOKIE_COPY_UNTIL is not a valid timestamp: ${value}`);
-  }
-  return deadline;
-}
-
-type CookiePair = { name: string; value: string };
-
-function parseCookiePairs(header: string): CookiePair[] {
-  const pairs: CookiePair[] = [];
+function cookieNames(header: string): string[] {
+  const names: string[] = [];
   for (const part of header.split(";")) {
     const trimmed = part.trim();
-    if (!trimmed) continue;
     const eq = trimmed.indexOf("=");
-    if (eq <= 0) continue;
-    pairs.push({ name: trimmed.slice(0, eq), value: trimmed.slice(eq + 1) });
+    if (eq > 0) names.push(trimmed.slice(0, eq));
   }
-  return pairs;
+  return names;
 }
 
-const ATTRIBUTES = "Path=/; HttpOnly; Secure; SameSite=Lax";
-
-// Pure planning step: rewrites the request's Cookie header so this request
-// authenticates with the host-only names, and lists the Set-Cookie headers
-// that make the browser do the same. Returns null when there is nothing to do.
-export function migrateLegacyAuthCookies(
+// Set-Cookie headers that delete every parent-domain auth cookie the request
+// carried. Never copies them: any sibling host can set a parent-domain cookie.
+export function expiredLegacyAuthCookies(
   cookieHeader: string | null | undefined,
-  options: LegacyCookieMigrationOptions,
-  now: Date = new Date(),
-): { cookieHeader: string; setCookies: string[] } | null {
-  if (!cookieHeader) return null;
-  const copying = options.copyUntil !== null && now < options.copyUntil;
-  const pairs = parseCookiePairs(cookieHeader);
-  if (!pairs.some((p) => p.name.startsWith(LEGACY_PREFIX))) return null;
-
-  const current = new Set(pairs.filter((p) => p.name.startsWith(HOST_PREFIX)).map((p) => p.name));
-  const sessionOnly = pairs.some(
-    (p) => p.name === `${LEGACY_PREFIX}dont_remember` || p.name === `${HOST_PREFIX}dont_remember`,
-  );
-  const domain = options.legacyDomain ? `; Domain=${options.legacyDomain}` : "";
-
-  const kept: string[] = [];
-  const setCookies: string[] = [];
-  for (const pair of pairs) {
-    if (!pair.name.startsWith(LEGACY_PREFIX)) {
-      kept.push(`${pair.name}=${pair.value}`);
-      continue;
-    }
-    const target = `${HOST_PREFIX}${pair.name.slice(LEGACY_PREFIX.length)}`;
-    if (copying && !current.has(target)) {
-      current.add(target);
-      kept.push(`${target}=${pair.value}`);
-      const maxAge =
-        target === `${HOST_PREFIX}session_token` && !sessionOnly
-          ? `; Max-Age=${options.sessionMaxAgeSeconds}`
-          : "";
-      setCookies.push(`${target}=${pair.value}${maxAge}; ${ATTRIBUTES}`);
-    }
-    setCookies.push(`${pair.name}=; Max-Age=0${domain}; ${ATTRIBUTES}`);
-  }
-  return { cookieHeader: kept.join("; "), setCookies };
+  legacyDomain: string | undefined,
+): string[] {
+  if (!cookieHeader) return [];
+  const domain = legacyDomain ? `; Domain=${legacyDomain}` : "";
+  return [
+    ...new Set(cookieNames(cookieHeader).filter((name) => name.startsWith(LEGACY_PREFIX))),
+  ].map((name) => `${name}=; Max-Age=0${domain}; Path=/; HttpOnly; Secure; SameSite=Lax`);
 }
 
-function setCookieName(header: string): string {
-  const eq = header.indexOf("=");
-  return eq > 0 ? header.slice(0, eq).trim() : header.trim();
-}
-
-export function legacyAuthCookieMigration(
-  options: LegacyCookieMigrationOptions,
-): MiddlewareHandler {
+export function expireLegacyAuthCookies(legacyDomain: string | undefined): MiddlewareHandler {
   return async (c, next) => {
-    const plan = migrateLegacyAuthCookies(c.req.raw.headers.get("cookie"), options);
-    if (!plan) return next();
-
-    const headers = new Headers(c.req.raw.headers);
-    if (plan.cookieHeader) headers.set("cookie", plan.cookieHeader);
-    else headers.delete("cookie");
-    c.req.raw = new Request(c.req.raw, { headers });
-
+    const expired = expiredLegacyAuthCookies(c.req.header("cookie"), legacyDomain);
     await next();
-
-    // A handler that sets an auth cookie itself (sign-in, sign-out, session
-    // refresh) has the final say over that name.
-    const alreadySet = new Set(c.res.headers.getSetCookie().map(setCookieName));
-    for (const cookie of plan.setCookies) {
-      if (alreadySet.has(setCookieName(cookie))) continue;
-      c.res.headers.append("set-cookie", cookie);
-    }
+    for (const cookie of expired) c.res.headers.append("set-cookie", cookie);
   };
 }

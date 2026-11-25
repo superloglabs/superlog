@@ -60,19 +60,12 @@ import {
   requestWithAuthClientIp,
   resolveAuthClientIp,
 } from "./auth-client-ip.js";
-import { legacyAuthCookieMigration } from "./auth-cookies.js";
+import { expireLegacyAuthCookies } from "./auth-cookies.js";
 import { enforceGlobalAuthRateLimit } from "./auth-global-rate-limit.js";
 import { startAuthRateLimitCleanup } from "./auth-rate-limit-cleanup.js";
 import { recordAuthRateLimited } from "./auth-rate-limit-metrics.js";
 import { createDrizzleAuthRateLimitRepository } from "./auth-rate-limit-repository.js";
-import {
-  API_ORIGIN,
-  AUTH_COOKIES_HOST_ONLY,
-  LEGACY_AUTH_COOKIE_COPY_UNTIL,
-  LEGACY_AUTH_COOKIE_DOMAIN,
-  SESSION_MAX_AGE_SECONDS,
-  auth,
-} from "./auth.js";
+import { API_ORIGIN, AUTH_COOKIES_HOST_ONLY, LEGACY_AUTH_COOKIE_DOMAIN, auth } from "./auth.js";
 import {
   InvalidLinearDefaultTeamError,
   buildAutomationSettingsConflictUpdate,
@@ -252,17 +245,10 @@ logger.info(
 const incidentLifecycle = createIncidentLifecycle(db);
 const sourceMapObjectStore = sourceMapObjectStoreFromEnv(process.env);
 
-// Moves auth cookies from the old parent-domain scope to host-only names
-// before anything reads the session. See auth-cookies.ts.
+// Deletes the old parent-domain auth cookies from browsers that still send
+// them. They are not read any more. See auth-cookies.ts.
 if (AUTH_COOKIES_HOST_ONLY) {
-  app.use(
-    "*",
-    legacyAuthCookieMigration({
-      legacyDomain: LEGACY_AUTH_COOKIE_DOMAIN,
-      sessionMaxAgeSeconds: SESSION_MAX_AGE_SECONDS,
-      copyUntil: LEGACY_AUTH_COOKIE_COPY_UNTIL,
-    }),
-  );
+  app.use("*", expireLegacyAuthCookies(LEGACY_AUTH_COOKIE_DOMAIN));
 }
 // Cookie-authenticated writes must come from the web app or the API itself.
 app.use("*", cookieWriteOriginGuard([...WEB_CORS_ORIGINS, new URL(API_ORIGIN).origin]));

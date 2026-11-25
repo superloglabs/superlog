@@ -13,11 +13,7 @@ import { admin, organization } from "better-auth/plugins";
 import { eq } from "drizzle-orm";
 import { favoriteProjectToSeed, pickActiveOrgId as pickActiveOrgIdRule } from "./active-context.js";
 import { AUTH_CLIENT_IP_HEADER } from "./auth-client-ip.js";
-import {
-  authCookieOptions,
-  legacyCookieCopyDeadline,
-  legacySharedCookieDomain,
-} from "./auth-cookies.js";
+import { authCookieOptions, legacySharedCookieDomain } from "./auth-cookies.js";
 import { AUTH_RATE_LIMIT } from "./auth-rate-limit.js";
 import { autumnBillingAccess } from "./autumn-billing-access.js";
 import {
@@ -50,12 +46,6 @@ export const API_ORIGIN = process.env.BETTER_AUTH_URL ?? "http://localhost:4100"
 // Auth cookies are host-only `__Host-` cookies on the API host. See
 // auth-cookies.ts for the scope and the move away from parent-domain cookies.
 export const LEGACY_AUTH_COOKIE_DOMAIN = legacySharedCookieDomain(API_ORIGIN, WEB_ORIGIN);
-export const SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
-// Until this time, sessions in the old parent-domain cookies are moved to the
-// host-only names. Unset means old cookies are only expired.
-export const LEGACY_AUTH_COOKIE_COPY_UNTIL = legacyCookieCopyDeadline(
-  process.env.AUTH_LEGACY_COOKIE_COPY_UNTIL,
-);
 const AUTH_COOKIE_OPTIONS = authCookieOptions(API_ORIGIN);
 export const AUTH_COOKIES_HOST_ONLY = "cookiePrefix" in AUTH_COOKIE_OPTIONS;
 
@@ -151,9 +141,6 @@ export const auth = betterAuth({
   // refreshed grant with BETTER_AUTH_SECRET.
   account: {
     encryptOAuthTokens: true,
-  },
-  session: {
-    expiresIn: SESSION_MAX_AGE_SECONDS,
   },
   trustedOrigins: WEB_ORIGINS,
   database: drizzleAdapter(db, {
