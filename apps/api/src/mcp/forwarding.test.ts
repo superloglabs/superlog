@@ -1,6 +1,6 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes, verify } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, afterEach, before, mock, test } from "node:test";
@@ -12,6 +12,7 @@ import {
   McpForwardRedirectError,
   forwardMcpRequest,
   mcpForwardAccess,
+  parseForwardSigningKey,
   workspaceMcpEndpoint,
 } from "./forwarding.js";
 import { mountMcpPublic } from "./index.js";
@@ -20,13 +21,49 @@ const orgIds: string[] = [];
 const userIds: string[] = [];
 const clientIds: string[] = [];
 
+const signer = generateKeyPairSync("ed25519");
+const signingKeyText = signer.privateKey
+  .export({ format: "der", type: "pkcs8" })
+  .toString("base64");
+const parsedSigningKey = parseForwardSigningKey(signingKeyText);
+if (!parsedSigningKey) throw new Error("test signing key did not parse");
+const signingKey = parsedSigningKey;
+
+// The claims of an assertion signed by the test key, after checking the
+// signature, the header, and that it covers exactly this body.
+function verifiedClaims(
+  assertion: string | null,
+  body: string | Uint8Array,
+): Record<string, unknown> {
+  assert.ok(assertion);
+  const [header, payload, signature] = assertion.split(".") as [string, string, string];
+  assert.deepEqual(JSON.parse(Buffer.from(header, "base64url").toString()), {
+    alg: "EdDSA",
+    typ: "JWT",
+  });
+  assert.ok(
+    verify(
+      null,
+      Buffer.from(`${header}.${payload}`),
+      signer.publicKey,
+      Buffer.from(signature, "base64url"),
+    ),
+  );
+  const claims = JSON.parse(Buffer.from(payload, "base64url").toString()) as Record<
+    string,
+    unknown
+  >;
+  assert.equal(claims.body, createHash("sha256").update(body).digest("base64url"));
+  return claims;
+}
+
 before(async () => {
   await runMigrations();
 });
 
 afterEach(() => {
   mock.restoreAll();
-  Reflect.deleteProperty(process.env, "LEGACY_MCP_FORWARD_TOKEN");
+  Reflect.deleteProperty(process.env, "LEGACY_MCP_FORWARD_SIGNING_KEY");
 });
 
 after(async () => {
@@ -49,7 +86,21 @@ test("forwards read-only access unless the token has the full grant", () => {
   assert.equal(mcpForwardAccess(null, false), "read-write");
 });
 
-test("sends the credential only to an HTTPS workspace origin or localhost", () => {
+test("reads the signing key only as a base64 PKCS#8 Ed25519 key", () => {
+  assert.ok(parseForwardSigningKey(` ${signingKeyText} `));
+  const rsa = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
+  for (const value of [
+    undefined,
+    "",
+    "not base64!",
+    "forward-secret",
+    rsa.export({ format: "der", type: "pkcs8" }).toString("base64"),
+  ]) {
+    assert.equal(parseForwardSigningKey(value), null, String(value).slice(0, 20));
+  }
+});
+
+test("sends the assertion only to an HTTPS workspace origin or localhost", () => {
   assert.equal(
     workspaceMcpEndpoint("https://us.example.com")?.toString(),
     "https://us.example.com/api/mcp",
@@ -107,7 +158,7 @@ test("forwards the JSON-RPC body unchanged and streams the answer back", async (
     }),
     {
       access: "read",
-      credential: "forward-secret",
+      signingKey,
       email: "ash@example.com",
       endpoint: new URL("https://us.example.com/api/mcp"),
       projectId: "11111111-1111-4111-8111-111111111111",
@@ -119,17 +170,29 @@ test("forwards the JSON-RPC body unchanged and streams the answer back", async (
   assert.equal(sent.url, "https://us.example.com/api/mcp");
   assert.equal(sent.init.method, "POST");
   assert.equal(new TextDecoder().decode(sent.init.body as ArrayBuffer), body);
-  assert.deepEqual(Object.fromEntries(new Headers(sent.init.headers).entries()), {
+  const { "x-legacy-mcp-assertion": assertion, ...sentHeaders } = Object.fromEntries(
+    new Headers(sent.init.headers).entries(),
+  );
+  assert.deepEqual(sentHeaders, {
     accept: "application/json, text/event-stream",
     "content-type": "application/json",
     "last-event-id": "event-7",
     "mcp-protocol-version": "2025-06-18",
     "mcp-session-id": "session-1",
-    "x-legacy-mcp-access": "read",
-    "x-legacy-mcp-forward-token": "forward-secret",
-    "x-legacy-mcp-project-id": "11111111-1111-4111-8111-111111111111",
-    "x-legacy-mcp-user-email": "ash@example.com",
   });
+  const claims = verifiedClaims(assertion ?? null, body);
+  const { iat, exp, jti, ...rest } = claims as { exp: number; iat: number; jti: string };
+  assert.deepEqual(rest, {
+    access: "read",
+    aud: "https://us.example.com",
+    body: createHash("sha256").update(body).digest("base64url"),
+    email: "ash@example.com",
+    iss: "superlog-legacy-mcp",
+    project: "11111111-1111-4111-8111-111111111111",
+  });
+  assert.ok(Math.abs(iat - Date.now() / 1000) < 5);
+  assert.equal(exp - iat, 60);
+  assert.match(jti, /^[A-Za-z0-9_-]{22}$/);
   assert.equal(response.status, 200);
   assert.equal(sent.init.redirect, "manual");
   assert.deepEqual(Object.fromEntries(response.headers.entries()), {
@@ -140,10 +203,10 @@ test("forwards the JSON-RPC body unchanged and streams the answer back", async (
   assert.equal(await response.text(), '{"jsonrpc":"2.0","id":1,"result":{}}');
 });
 
-test("never follows the workspace's redirect with the credential", async () => {
+test("never follows the workspace's redirect with the assertion", async () => {
   const elsewhere: string[] = [];
   const other = createServer((req, res) => {
-    elsewhere.push(String(req.headers["x-legacy-mcp-forward-token"]));
+    elsewhere.push(String(req.headers["x-legacy-mcp-assertion"]));
     res.end("{}");
   });
   await new Promise<void>((resolve) => other.listen(0, "127.0.0.1", resolve));
@@ -160,7 +223,7 @@ test("never follows the workspace's redirect with the credential", async () => {
         new Request("https://api.example.com/mcp", { method: "POST", body: "{}" }),
         {
           access: "read",
-          credential: "forward-secret",
+          signingKey,
           email: "ash@example.com",
           endpoint: new URL(`http://localhost:${workspacePort}/api/mcp`),
           projectId: "11111111-1111-4111-8111-111111111111",
@@ -197,7 +260,7 @@ function forwardTo(endpoint: URL, method: string, timeoutMs: number) {
     }),
     {
       access: "read",
-      credential: "forward-secret",
+      signingKey,
       email: "ash@example.com",
       endpoint,
       projectId: "11111111-1111-4111-8111-111111111111",
@@ -318,7 +381,7 @@ function stubWorkspace() {
 }
 
 test("serves projects that are not cut over here", async () => {
-  process.env.LEGACY_MCP_FORWARD_TOKEN = "forward-secret";
+  process.env.LEGACY_MCP_FORWARD_SIGNING_KEY = signingKeyText;
   const fetch = stubWorkspace();
   const app = mcpApp();
 
@@ -331,7 +394,7 @@ test("serves projects that are not cut over here", async () => {
 });
 
 test("forwards a cut-over project's requests as the token owner", async () => {
-  process.env.LEGACY_MCP_FORWARD_TOKEN = "forward-secret";
+  process.env.LEGACY_MCP_FORWARD_SIGNING_KEY = signingKeyText;
   const fetch = stubWorkspace();
   const seeded = await seedToken({ cutOverAt: new Date(), scope: "mcp:read" });
 
@@ -348,14 +411,19 @@ test("forwards a cut-over project's requests as the token owner", async () => {
   assert.equal(url.toString(), "https://us.example.com/api/mcp");
   const headers = new Headers(init.headers);
   assert.equal(headers.get("authorization"), null);
-  assert.equal(headers.get("x-legacy-mcp-forward-token"), "forward-secret");
-  assert.equal(headers.get("x-legacy-mcp-project-id"), seeded.projectId);
-  assert.equal(headers.get("x-legacy-mcp-user-email"), seeded.email);
-  assert.equal(headers.get("x-legacy-mcp-access"), "read");
+  assert.equal(headers.get("x-legacy-mcp-forward-token"), null);
+  const claims = verifiedClaims(
+    headers.get("x-legacy-mcp-assertion"),
+    new Uint8Array(init.body as ArrayBuffer),
+  );
+  assert.equal(claims.aud, "https://us.example.com");
+  assert.equal(claims.project, seeded.projectId);
+  assert.equal(claims.email, seeded.email);
+  assert.equal(claims.access, "read");
 });
 
 test("answers 502 when a cut-over project's workspace redirects", async () => {
-  process.env.LEGACY_MCP_FORWARD_TOKEN = "forward-secret";
+  process.env.LEGACY_MCP_FORWARD_SIGNING_KEY = signingKeyText;
   const fetch = mock.method(globalThis, "fetch", async () =>
     Response.redirect("https://elsewhere.example.com/api/mcp", 302),
   );
@@ -368,7 +436,7 @@ test("answers 502 when a cut-over project's workspace redirects", async () => {
 });
 
 test("fails closed for a cut-over project with an empty or invalid address", async () => {
-  process.env.LEGACY_MCP_FORWARD_TOKEN = "forward-secret";
+  process.env.LEGACY_MCP_FORWARD_SIGNING_KEY = signingKeyText;
   const fetch = stubWorkspace();
   const app = mcpApp();
 
@@ -384,14 +452,18 @@ test("refuses a cut-over project's requests when forwarding is not configured", 
   const fetch = stubWorkspace();
   const seeded = await seedToken({ cutOverAt: new Date() });
 
-  const response = await initialize(mcpApp(), seeded.token);
-
-  assert.equal(response.status, 503);
+  for (const signingKey of [undefined, "forward-secret"]) {
+    if (signingKey === undefined)
+      Reflect.deleteProperty(process.env, "LEGACY_MCP_FORWARD_SIGNING_KEY");
+    else process.env.LEGACY_MCP_FORWARD_SIGNING_KEY = signingKey;
+    const response = await initialize(mcpApp(), seeded.token);
+    assert.equal(response.status, 503);
+  }
   assert.equal(fetch.mock.callCount(), 0);
 });
 
 test("still rejects an unknown token before looking for a cutover", async () => {
-  process.env.LEGACY_MCP_FORWARD_TOKEN = "forward-secret";
+  process.env.LEGACY_MCP_FORWARD_SIGNING_KEY = signingKeyText;
   const fetch = stubWorkspace();
 
   const response = await initialize(mcpApp(), "mcp_unknown");
