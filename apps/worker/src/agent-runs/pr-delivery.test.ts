@@ -10,6 +10,7 @@ import {
   compensatePullRequestDelivery,
   deliverProposedPullRequest,
   guardProposedPullRequestOverlap,
+  legacyDeliveryIdentityBaseBranch,
   overlappingFilesForPullRequestClaim,
   preflightProposedPullRequest,
   publishPullRequestUpdateIfCurrent,
@@ -506,6 +507,17 @@ test("resolvePullRequestBaseBranch ignores an agent-chosen base branch when the 
   const pr = { baseBranch: "release/production" } as schema.AgentRunPr;
 
   assert.equal(resolvePullRequestBaseBranch(ctx, pr), null);
+});
+
+test("legacy delivery receipts keep hashing the base branch the run asked for", () => {
+  assert.equal(
+    legacyDeliveryIdentityBaseBranch({ prBaseBranch: null }, { baseBranch: "release" }),
+    "release",
+  );
+  assert.equal(
+    legacyDeliveryIdentityBaseBranch({ prBaseBranch: "develop" }, { baseBranch: "release" }),
+    "develop",
+  );
 });
 
 test("resolvePullRequestTargetBaseBranch targets the repository default, not the agent's branch", () => {

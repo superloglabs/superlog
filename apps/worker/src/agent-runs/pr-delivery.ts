@@ -212,6 +212,17 @@ export function resolvePullRequestBaseBranch(
   return normalizePrBaseBranch(ctx.prBaseBranch);
 }
 
+// The legacy delivery receipt hashes the base branch the run asked for. Keep
+// hashing the same value as before the agent's choice was ignored, so a run
+// that recorded a receipt earlier can still resume it. The PR itself always
+// targets resolvePullRequestTargetBaseBranch.
+export function legacyDeliveryIdentityBaseBranch(
+  ctx: Pick<AgentRunContext, "prBaseBranch">,
+  pr: Pick<schema.AgentRunPr, "baseBranch">,
+): string | null {
+  return normalizePrBaseBranch(ctx.prBaseBranch) ?? normalizePrBaseBranch(pr.baseBranch);
+}
+
 export function agentWritePolicy(
   ctx: Pick<AgentRunContext, "agentDependencyChangesEnabled">,
 ): AgentWritePolicy {
@@ -359,7 +370,7 @@ export async function completeWithPullRequest(
     input: {
       patch,
       branchName,
-      baseBranch: resolvePullRequestBaseBranch(ctx, pr),
+      baseBranch: legacyDeliveryIdentityBaseBranch(ctx, pr),
       title: prTitle,
       body: prBody,
     },
