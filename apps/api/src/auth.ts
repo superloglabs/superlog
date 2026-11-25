@@ -14,6 +14,7 @@ import { eq } from "drizzle-orm";
 import { favoriteProjectToSeed, pickActiveOrgId as pickActiveOrgIdRule } from "./active-context.js";
 import { AUTH_CLIENT_IP_HEADER } from "./auth-client-ip.js";
 import { AUTH_RATE_LIMIT } from "./auth-rate-limit.js";
+import { autumnBillingAccess } from "./autumn-billing-access.js";
 import {
   orgInvitationEmailBody,
   passwordResetEmailBody,
@@ -74,8 +75,10 @@ const COOKIE_DOMAIN = sharedCookieDomain();
 // Autumn customer, auto-created on first sign-in, so billing is per-org. Only
 // enabled when AUTUMN_SECRET_KEY is present, so local dev / worktrees without
 // billing config keep working — same opt-in pattern as the social providers.
+// autumnBillingAccess lets members read billing and only owners and admins
+// change it.
 const autumnPlugins = process.env.AUTUMN_SECRET_KEY
-  ? [autumn({ customerScope: "organization" })]
+  ? [autumn({ customerScope: "organization" }), autumnBillingAccess()]
   : [];
 
 // Fail loud and early if the signing secret is missing. Better Auth doesn't
